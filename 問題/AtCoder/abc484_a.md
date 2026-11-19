@@ -1,8 +1,8 @@
 ---
-task_id: "abc484_a"
-problem_url: "https://atcoder.jp/contests/abc484/tasks/abc484_a"
+task_id: abc484_a
+problem_url: https://atcoder.jp/contests/abc484/tasks/abc484_a
 submission_urls: []
-representative_submission_url: null
+representative_submission_url:
 status: organized
 ---
 
