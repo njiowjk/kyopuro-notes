@@ -6,8 +6,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import atc_source
 import note
 
 
@@ -38,6 +41,28 @@ elif 'result' in fixture:
 sys.exit(fixture.get('exit', 0))
 """
 
+WINDOWS_CLI = """from test_note import windows_atc_fixture
+import note
+
+with windows_atc_fixture():
+    raise SystemExit(note.main())
+"""
+
+
+def windows_atc_fixture():
+    # Windows では拡張子なしの atc 呼び出しで .cmd を起動できない。
+    def run_atc(command, **options):
+        executable, *arguments = command
+        if executable != "atc":
+            raise AssertionError(f"想定外のコマンド: {executable}")
+        script = Path(os.environ["PATH"]) / executable
+        if not script.is_file():
+            raise FileNotFoundError(script)
+        return subprocess.run([sys.executable, "-B", script, *arguments], **options)
+
+    runner = SimpleNamespace(run=run_atc, TimeoutExpired=subprocess.TimeoutExpired)
+    return patch.object(atc_source, "subprocess", runner)
+
 
 class InboxFixture:
     def setUp(self):
@@ -56,11 +81,13 @@ class InboxFixture:
         self.atc = self.bin / "atc"
         self.fixture = self.root / "atc.json"
         self.fixture.write_text("{}", encoding="utf-8")
+        self.cli_script = self.tools / "note.py"
         if os.name == "nt":
-            dummy = self.bin / "fake_atc.py"
-            dummy.write_text(FAKE_ATC, encoding="utf-8")
-            self.atc = self.bin / "atc.cmd"
-            self.atc.write_text(f'@"{sys.executable}" "{dummy}" %*\n', encoding="utf-8")
+            self.atc.write_text(FAKE_ATC, encoding="utf-8")
+            shutil.copyfile(__file__, self.tools / "test_note.py")
+            self.cli_script = self.tools / "run_note.py"
+            self.cli_script.write_text(WINDOWS_CLI, encoding="utf-8")
+            self.enterContext(windows_atc_fixture())
         else:
             self.atc.write_text(f"#!{sys.executable}\n{FAKE_ATC}", encoding="utf-8")
             self.atc.chmod(0o700)
@@ -74,7 +101,7 @@ class InboxFixture:
 
     def cli(self, *args, code=0, cwd=None):
         result = subprocess.run(
-            [sys.executable, "-B", self.tools / "note.py", *args],
+            [sys.executable, "-B", self.cli_script, *args],
             cwd=self.root if cwd is None else cwd,
             env=self.env,
             capture_output=True,
@@ -119,10 +146,13 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
         file.write_bytes(content.encode("utf-8"))
         return file
 
-    def proposal(self, name, link, *, state="作成済み"):
-        return f"## {name}\n\n- 状態　{state}\n- 主分野・保存先　[{name}]({link})\n\n"
+    def link(self, name, target):
+        return f"- [{name}]({target})\n"
 
-    def test_sync_filters_sorts_and_can_add_later_without_touching_inbox(self):
+    def write_catalog(self, *links):
+        return self.write("管理/解法ノート一覧.md", "# 解法ノート一覧\n\n" + "".join(links))
+
+    def test_sync_uses_catalog_only_and_can_add_later_without_touching_inbox(self):
         begin, end = self.BEGIN, self.END
         before = f"# 文字列\n\n手書きの説明\n\n{begin}\n"
         after = f"{end}\n\n手書きの追記\n"
@@ -130,22 +160,22 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
             "分野/文字列/文字列.md",
             before + "\n- [古い項目](古い項目.md)\n\n" + after,
         )
-        for name in ("Z", "A #1", "B", "C"):
+        for name in ("Z", "A #1", "B"):
             self.write(f"分野/文字列/{name}.md", f"# {name}\n")
         self.write("分野/木/木の走査.md", "# 木の走査\n")
         self.write("分野/整数/整数の集計.md", "# 整数の集計\n")
         unmanaged = self.write("分野/整数/整数.md", "# 整数\n")
-        proposals = (
-            "````markdown\n" + self.proposal("雛形", "invalid") + "````\n\n"
-            + self.proposal("Z", "../分野/文字列/Z.md")
-            + self.proposal("A #1", "../分野/文字列/A%20%231.md")
-            + self.proposal("Zの再登録", "../分野/文字列/./Z.md")
-            + self.proposal("B", "../分野/文字列/B.md", state="提案中")
-            + self.proposal("C", "../分野/文字列/C.md", state="修正待ち")
-            + self.proposal("木の走査", "../分野/木/木の走査.md")
-            + self.proposal("整数の集計", "../分野/整数/整数の集計.md")
+        proposals = self.write(
+            "管理/追加候補.md",
+            "## B\n\n- 状態　作成済み\n- 主分野・保存先　[B](../分野/文字列/B.md)\n",
         )
-        result = self.write("管理/追加候補.md", proposals)
+        catalog = self.write_catalog(
+            self.link("Z", "../分野/文字列/Z.md"),
+            self.link("A #1", "../分野/文字列/A%20%231.md"),
+            self.link("Zの再登録", "../分野/文字列/./Z.md"),
+            self.link("木の走査", "../分野/木/木の走査.md"),
+            self.link("整数の集計", "../分野/整数/整数の集計.md"),
+        )
         self.assertIn("整数, 木", self.cli("sync-domain-links").stdout)
         self.assertEqual(
             index.read_bytes().decode("utf-8"),
@@ -155,9 +185,12 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
         self.assertIn("0件", self.cli("sync-domain-links").stdout)
         self.assertEqual(index.stat().st_mtime_ns, original_mtime)
 
-        result.write_bytes(proposals.replace("提案中", "作成済み").encode("utf-8"))
+        proposals.unlink()
+        with catalog.open("ab") as stream:
+            stream.write(self.link("B", "../分野/文字列/B.md").encode("utf-8"))
         self.assertIn("1件", self.cli("sync-domain-links").stdout)
         self.assertIn(b"- [B](B.md)\n", index.read_bytes())
+        self.assertIn("0件", self.cli("sync-domain-links").stdout)
         self.assertEqual(unmanaged.read_text(encoding="utf-8"), "# 整数\n")
         self.assertFalse((self.root / "分野/木/木.md").exists())
         self.assertFalse(self.source.parent.exists())
@@ -175,8 +208,8 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
         before_mode = index.stat().st_mode
         for name in ("A B", "C", "D", "が"):
             self.write(f"分野/文字列/{name}.md", "# 解法\n")
-        self.write("管理/追加候補.md", "".join(
-            self.proposal(name, f"../分野/文字列/{link}.md")
+        self.write_catalog(*(
+            self.link(name, f"../分野/文字列/{link}.md")
             for name, link in (("A B", "A%20B"), ("C", "C"), ("D", "D"), ("が", "が"))
         ))
         self.cli("sync-domain-links")
@@ -191,20 +224,21 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
         index = self.write("分野/配列/配列.md", content)
         self.write("分野/配列/OK.md", "# OK\n")
         self.write("アルゴリズム/外部.md", "# 外部\n")
-        valid = self.proposal("OK", "../分野/配列/OK.md")
+        valid = self.link("OK", "../分野/配列/OK.md")
         for name, path in (
             ("欠落", "../分野/配列/欠落.md"),
             ("外部", "../アルゴリズム/外部.md"),
             ("入口", "../分野/配列/配列.md"),
             ("分野/グラフ/OK.md", "../分野/配列/OK.md"),
+            ("節", "../分野/配列/OK.md#節"),
         ):
             with self.subTest(name=name):
-                self.write("管理/追加候補.md", valid + self.proposal(name, path))
+                self.write_catalog(valid, self.link(name, path))
                 self.cli("sync-domain-links", code=1)
                 self.assertEqual(index.read_text(encoding="utf-8"), content)
 
     def test_sync_rejects_broken_markers_or_handwritten_content_inside_list(self):
-        self.write("管理/追加候補.md", "# 解法ノートの追加候補\n")
+        self.write_catalog()
         for markers in (
             self.BEGIN,
             f"{self.BEGIN}\n{self.BEGIN}\n{self.END}",
@@ -217,13 +251,17 @@ class DomainLinksTests(InboxFixture, unittest.TestCase):
                 self.cli("sync-domain-links", code=1)
                 self.assertEqual(index.read_text(encoding="utf-8"), original)
 
-    def test_sync_preserves_existing_list_if_proposals_have_an_unclosed_fence(self):
+    def test_sync_preserves_existing_list_if_catalog_is_missing_or_malformed(self):
         content = f"# 配列\n\n{self.BEGIN}\n\n- [OK](OK.md)\n\n{self.END}\n"
         index = self.write("分野/配列/配列.md", content)
         self.write("分野/配列/OK.md", "# OK\n")
-        self.write("管理/追加候補.md", "```markdown\n" + self.proposal("OK", "../分野/配列/OK.md"))
         self.cli("sync-domain-links", code=1)
         self.assertEqual(index.read_text(encoding="utf-8"), content)
+        for bad_catalog in ("", "# 間違った見出し\n", "# 解法ノート一覧\n\n- [[OK]]\n"):
+            with self.subTest(catalog=bad_catalog):
+                self.write("管理/解法ノート一覧.md", bad_catalog)
+                self.cli("sync-domain-links", code=1)
+                self.assertEqual(index.read_text(encoding="utf-8"), content)
 
 
 class InboxTests(InboxFixture, unittest.TestCase):

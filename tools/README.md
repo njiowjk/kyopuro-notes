@@ -14,4 +14,6 @@ python3 tools/note.py list
 
 原本、スナップショット、生成した一覧はGitの除外対象です。[照合と再実行](resolve.md)・[Inbox仕様](../管理/Inbox仕様.md)
 
+`python3 tools/note.py sync-domain-links` は [解法ノート一覧](../管理/解法ノート一覧.md) の登録先を分野入口の `domain-solutions` に同期します。[一覧の書式と同期のルール](../管理/分類ルール.md#分野入口の解法一覧)
+
 テストは `python3 -B -m unittest discover -s tools` で実行できます。

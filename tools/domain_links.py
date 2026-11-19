@@ -1,4 +1,4 @@
-"""Update managed lists of approved solution notes in domain indexes."""
+"""Update managed lists of registered solution notes in domain indexes."""
 
 from collections import defaultdict
 import os
@@ -11,11 +11,11 @@ from urllib.parse import quote, unquote, urlsplit
 BEGIN = "<!-- BEGIN AUTO: domain-solutions -->"
 END = "<!-- END AUTO: domain-solutions -->"
 LINK = r"\[((?:\\.|[^\]\\])+)\]\(([^()\r\n]+)\)"
-PROPOSALS = Path("管理") / "追加候補.md"
+CATALOG = Path("管理") / "解法ノート一覧.md"
 
 
 class DomainLinkError(Exception):
-    """A malformed proposal or managed region that requires editing."""
+    """A malformed catalog entry or managed region that requires editing."""
 
 
 def markdown_lines(path, lines):
@@ -48,31 +48,32 @@ def markdown_target(origin, destination):
     return None
 
 
-def approved_notes(vault, proposals, content):
-    visible = "".join(line for _, line in markdown_lines(proposals, content.splitlines(keepends=True)))
+def registered_notes(vault, catalog, content):
+    lines = content.splitlines()
+    if not lines or lines[0] != "# 解法ノート一覧":
+        raise DomainLinkError(f"{catalog.name}の先頭に「# 解法ノート一覧」が必要です。")
     groups = defaultdict(dict)
-    for section in re.split(r"(?m)^## ", visible)[1:]:
-        states = [state.strip() for state in re.findall(r"(?m)^- 状態[ \t　]+([^\r\n]+)", section)]
-        if "作成済み" not in states:
+    for index, line in enumerate(lines[1:], start=2):
+        if not line.strip():
             continue
-        paths = re.findall(r"(?m)^- 主分野・保存先[ \t　]+([^\r\n]+)", section)
-        match = re.fullmatch(LINK, paths[0].strip()) if len(paths) == 1 else None
-        title = section.splitlines()[0]
-        if states != ["作成済み"] or not match:
-            raise DomainLinkError(f"作成済み候補「{title}」の状態または保存先の形式を確認してください。")
+        location = f"{catalog.name}の{index}行目"
+        match = re.fullmatch("- " + LINK, line)
+        if not match:
+            raise DomainLinkError(f"{location}に相対 Markdown リンクを1件記載してください。")
         label, link = match.groups()
         label = re.sub(r"\\([\\\[\]])", r"\1", label)
-        target = markdown_target(proposals, link)
+        target = markdown_target(catalog, link)
         if (
             target is None or target.parent.parent != vault / "分野"
+            or "#" in link or "?" in link
             or target.stem == target.parent.name
             or target.resolve() != target or not target.is_file()
         ):
-            raise DomainLinkError(f"作成済み候補「{title}」の保存先が分野内の解法ノートではありません。")
+            raise DomainLinkError(f"{location}のリンク先が分野内の解法ノートではありません。")
         if label.startswith("分野/") and normalize("NFC", unquote(label)) != normalize(
             "NFC", target.relative_to(vault).as_posix()
         ):
-            raise DomainLinkError(f"作成済み候補「{title}」の表示上の保存先とリンク先が一致しません。")
+            raise DomainLinkError(f"{location}の表示上の保存先とリンク先が一致しません。")
         group = groups[normalize("NFC", target.parent.name)]
         group.setdefault(normalize("NFC", target.name), target.name)
     return groups
@@ -125,8 +126,8 @@ def render_domain_index(vault, index, original, names):
     return "".join(lines[:start + 1]) + body + "".join(lines[end:])
 
 
-def plan_domain_links(vault, proposals, content):
-    groups = approved_notes(vault, proposals, content.decode("utf-8"))
+def plan_domain_links(vault, catalog, content):
+    groups = registered_notes(vault, catalog, content.decode("utf-8"))
     updates = []
     managed = set()
     for folder in sorted((vault / "分野").glob("*/")):
