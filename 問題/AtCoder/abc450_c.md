@@ -3,7 +3,7 @@ task_id: abc450_c
 problem_url: https://atcoder.jp/contests/abc450/tasks/abc450_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Puddles
@@ -21,15 +21,15 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [外周につながらない連結成分を数える](../../分野/グリッド/外周につながらない連結成分を数える.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [BFS（キューと複数始点）](../../アルゴリズム/BFS.md)
 - [DFS（グリッドと連結成分の数え方）](../../アルゴリズム/DFS.md)
-
-解法ノート候補「外周につながらない連結成分を数える」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - 4近傍だけを使うため、外周の白マスに斜めで接するだけの内側の成分は数える。外周を処理した後は内側だけを走査できる。

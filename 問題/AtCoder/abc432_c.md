@@ -3,7 +3,7 @@ task_id: abc432_c
 problem_url: https://atcoder.jp/contests/abc432/tasks/abc432_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Candy Tribulation
@@ -21,14 +21,14 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [公差が同じ有限等差数列の共通最大値を求める](../../分野/整数/公差が同じ有限等差数列の共通最大値を求める.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [mod 計算（共通の剰余を扱う）](../../数学/mod計算.md)
-
-解法ノート候補「公差が同じ有限等差数列の共通最大値を求める」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - `d>0` は保証される。上下端が等しい場合も候補になる。剰余が異なる場合は上下端が重なっていても成立しない。

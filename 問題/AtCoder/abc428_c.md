@@ -3,7 +3,7 @@ task_id: abc428_c
 problem_url: https://atcoder.jp/contests/abc428/tasks/abc428_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Brackets Stack Query
@@ -21,15 +21,15 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [末尾の追加・削除ごとに括弧列を判定](../../分野/文字列/末尾の追加・削除ごとに括弧列を判定.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [累積和（接頭辞と空接頭辞）](../../典型/累積和.md)
 - [STL / stack（末尾の追加・削除）](../../STL/queue-stack-deque-heap.md)
-
-解法ノート候補「末尾の追加・削除ごとに括弧列を判定」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - 履歴の初期状態を残高0、最小値0とする。空接頭辞を含むため、接頭辞最小値は非負判定を `== 0` で行える。

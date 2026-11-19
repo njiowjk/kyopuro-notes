@@ -3,7 +3,7 @@ task_id: abc402_c
 problem_url: https://atcoder.jp/contests/abc402/tasks/abc402_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Dislike Foods
@@ -21,15 +21,15 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [逆引きと残数で必要条件がそろった対象を数える](../../分野/グラフ/逆引きと残数で必要条件がそろった対象を数える.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [DFS（頂点ごとの隣接リスト）](../../アルゴリズム/DFS.md)
 - [STL / set・map（キーから関連情報を参照）](../../STL/set-map.md)
-
-解法ノート候補「逆引きと残数で必要条件がそろった対象を数える」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - 料理番号と食材番号は別々の添字として管理する。番号を0始まりに変換しても、食材の個数 `K_i` は元の値を使う。

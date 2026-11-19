@@ -3,7 +3,7 @@ task_id: abc342_c
 problem_url: https://atcoder.jp/contests/abc342/tasks/abc342_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Many Replacement
@@ -21,15 +21,15 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [文字種ごとの対応表で一括置換を合成する](../../分野/文字列/文字種ごとの対応表で一括置換を合成する.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / string（文字列と文字を走査）](../../STL/string.md)
 - [STL / vector・array（小さな固定長の全走査）](../../STL/vector-array.md)
-
-解法ノート候補「文字種ごとの対応表で一括置換を合成する」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - たとえば `a→b` の後で `b→c` が来れば、元の `a` も元の `b` も `c` になる。更新するのは変換表のうち現在値が `b` の全箇所。

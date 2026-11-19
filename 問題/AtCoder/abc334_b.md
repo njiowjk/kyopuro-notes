@@ -3,7 +3,7 @@ task_id: abc334_b
 problem_url: https://atcoder.jp/contests/abc334/tasks/abc334_b
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # B - Christmas Trees
@@ -21,14 +21,14 @@ status: unorganized
 ## 使用した解法ノート
 
 <!-- BEGIN AUTO: related-solutions -->
+
+- [閉区間に含まれる等差数列の項数を数える](../../分野/整数/閉区間に含まれる等差数列の項数を数える.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [mod 計算（C++ の符号付き剰余）](../../数学/mod計算.md)
-
-解法ノート候補「閉区間に含まれる等差数列の項数を数える」は [追加候補](../../管理/追加候補.md) を参照。
-
 ## 問題固有の実装ポイント
 
 - 負の座標差を `M` で割ると、C++ の `/` は0方向に丸める。割り切れない負数の床は商より1小さく、割り切れない正数の天井は商より1大きい。
