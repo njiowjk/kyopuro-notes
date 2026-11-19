@@ -3,7 +3,7 @@ task_id: abc366_c
 problem_url: https://atcoder.jp/contests/abc366/tasks/abc366_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Balls and Bag Query
@@ -22,14 +22,14 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [追加・削除される多重集合の種類数を管理](../../分野/配列/追加・削除される多重集合の種類数を管理.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / set・map](../../STL/set-map.md)
 - [文字カウント](../../典型/文字カウント.md)
-
-C++テンプレート案「追加・削除される多重集合の種類数を管理」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

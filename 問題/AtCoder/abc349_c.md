@@ -3,7 +3,7 @@ task_id: abc349_c
 problem_url: https://atcoder.jp/contests/abc349/tasks/abc349_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Airport Code
@@ -24,13 +24,13 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [部分列に含まれるかを貪欲に判定](../../分野/文字列/部分列に含まれるかを貪欲に判定.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / string（大文字・小文字）](../../STL/string.md)
-
-C++テンプレート案「部分列に含まれるかを貪欲に判定」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

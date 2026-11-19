@@ -3,7 +3,7 @@ task_id: abc355_c
 problem_url: https://atcoder.jp/contests/abc355/tasks/abc355_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Bingo 2
@@ -22,13 +22,13 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [行・列・対角線の完成をカウンタで検出](../../分野/グリッド/行・列・対角線の完成をカウンタで検出.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [固定3x3グリッド](../../典型/固定3x3グリッド.md)
-
-C++テンプレート案「行・列・対角線の完成をカウンタで検出」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

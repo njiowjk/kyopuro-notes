@@ -3,7 +3,7 @@ task_id: abc372_c
 problem_url: https://atcoder.jp/contests/abc372/tasks/abc372_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Count ABC Again
@@ -22,13 +22,13 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [1文字更新後の固定パターン出現数を差分更新](../../分野/文字列/1文字更新後の固定パターン出現数を差分更新.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / string](../../STL/string.md)
-
-C++テンプレート案「1文字更新後の固定パターン出現数を差分更新」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

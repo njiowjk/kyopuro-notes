@@ -47,7 +47,7 @@ class InboxFixture:
         self.tools = self.root / "tools"
         self.tools.mkdir()
         source = Path(note.__file__).parent
-        for filename in ("note.py", "atcoder.py", "atc_source.py"):
+        for filename in ("note.py", "atcoder.py", "atc_source.py", "domain_links.py"):
             shutil.copyfile(source / filename, self.tools / filename)
         self.workspace = self.root / "Workspace root"
         self.workspace.mkdir()
@@ -107,6 +107,123 @@ class InboxFixture:
 
     def resolve(self, *args, code=0):
         return self.cli("resolve", "--workspace", str(self.workspace), *args, code=code)
+
+
+class DomainLinksTests(InboxFixture, unittest.TestCase):
+    BEGIN = "<!-- BEGIN AUTO: domain-solutions -->"
+    END = "<!-- END AUTO: domain-solutions -->"
+
+    def write(self, path, content):
+        file = self.root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(content.encode("utf-8"))
+        return file
+
+    def proposal(self, name, link, *, state="作成済み"):
+        return f"## {name}\n\n- 状態　{state}\n- 主分野・保存先　[{name}]({link})\n\n"
+
+    def test_sync_filters_sorts_and_can_add_later_without_touching_inbox(self):
+        begin, end = self.BEGIN, self.END
+        before = f"# 文字列\n\n手書きの説明\n\n{begin}\n"
+        after = f"{end}\n\n手書きの追記\n"
+        index = self.write(
+            "分野/文字列/文字列.md",
+            before + "\n- [古い項目](古い項目.md)\n\n" + after,
+        )
+        for name in ("Z", "A #1", "B", "C"):
+            self.write(f"分野/文字列/{name}.md", f"# {name}\n")
+        self.write("分野/木/木の走査.md", "# 木の走査\n")
+        self.write("分野/整数/整数の集計.md", "# 整数の集計\n")
+        unmanaged = self.write("分野/整数/整数.md", "# 整数\n")
+        proposals = (
+            "````markdown\n" + self.proposal("雛形", "invalid") + "````\n\n"
+            + self.proposal("Z", "../分野/文字列/Z.md")
+            + self.proposal("A #1", "../分野/文字列/A%20%231.md")
+            + self.proposal("Zの再登録", "../分野/文字列/./Z.md")
+            + self.proposal("B", "../分野/文字列/B.md", state="提案中")
+            + self.proposal("C", "../分野/文字列/C.md", state="修正待ち")
+            + self.proposal("木の走査", "../分野/木/木の走査.md")
+            + self.proposal("整数の集計", "../分野/整数/整数の集計.md")
+        )
+        result = self.write("管理/追加候補.md", proposals)
+        self.assertIn("整数, 木", self.cli("sync-domain-links").stdout)
+        self.assertEqual(
+            index.read_bytes().decode("utf-8"),
+            before + "\n- [A #1](A%20%231.md)\n- [Z](Z.md)\n\n" + after,
+        )
+        original_mtime = index.stat().st_mtime_ns
+        self.assertIn("0件", self.cli("sync-domain-links").stdout)
+        self.assertEqual(index.stat().st_mtime_ns, original_mtime)
+
+        result.write_bytes(proposals.replace("提案中", "作成済み").encode("utf-8"))
+        self.assertIn("1件", self.cli("sync-domain-links").stdout)
+        self.assertIn(b"- [B](B.md)\n", index.read_bytes())
+        self.assertEqual(unmanaged.read_text(encoding="utf-8"), "# 整数\n")
+        self.assertFalse((self.root / "分野/木/木.md").exists())
+        self.assertFalse(self.source.parent.exists())
+        self.assertFalse(self.view.exists())
+
+    def test_sync_preserves_handwritten_links_line_endings_and_permissions(self):
+        manual = (
+            "# 文字列\r\n\r\n"
+            "- [手動で参照](./A%20B.md#節)\r\n"
+            "- [[分野/文字列/C|別名]]\r\n"
+            "- [Unicodeの別表記](か\u3099.md)\r\n\r\n"
+            "```md\r\n- [記法の例](D.md)\r\n```\r\n\r\n"
+        )
+        index = self.write("分野/文字列/文字列.md", manual + f"{self.BEGIN}\r\n\r\n{self.END}")
+        before_mode = index.stat().st_mode
+        for name in ("A B", "C", "D", "が"):
+            self.write(f"分野/文字列/{name}.md", "# 解法\n")
+        self.write("管理/追加候補.md", "".join(
+            self.proposal(name, f"../分野/文字列/{link}.md")
+            for name, link in (("A B", "A%20B"), ("C", "C"), ("D", "D"), ("が", "が"))
+        ))
+        self.cli("sync-domain-links")
+        self.assertEqual(
+            index.read_bytes().decode("utf-8"),
+            manual + f"{self.BEGIN}\r\n\r\n- [D](D.md)\r\n\r\n{self.END}",
+        )
+        self.assertEqual(index.stat().st_mode, before_mode)
+
+    def test_sync_rejects_wrong_missing_or_non_solution_targets_before_writing(self):
+        content = f"# 配列\n\n{self.BEGIN}\n\n{self.END}\n"
+        index = self.write("分野/配列/配列.md", content)
+        self.write("分野/配列/OK.md", "# OK\n")
+        self.write("アルゴリズム/外部.md", "# 外部\n")
+        valid = self.proposal("OK", "../分野/配列/OK.md")
+        for name, path in (
+            ("欠落", "../分野/配列/欠落.md"),
+            ("外部", "../アルゴリズム/外部.md"),
+            ("入口", "../分野/配列/配列.md"),
+            ("分野/グラフ/OK.md", "../分野/配列/OK.md"),
+        ):
+            with self.subTest(name=name):
+                self.write("管理/追加候補.md", valid + self.proposal(name, path))
+                self.cli("sync-domain-links", code=1)
+                self.assertEqual(index.read_text(encoding="utf-8"), content)
+
+    def test_sync_rejects_broken_markers_or_handwritten_content_inside_list(self):
+        self.write("管理/追加候補.md", "# 解法ノートの追加候補\n")
+        for markers in (
+            self.BEGIN,
+            f"{self.BEGIN}\n{self.BEGIN}\n{self.END}",
+            f"{self.END}\n{self.BEGIN}",
+            f"{self.BEGIN}\n手書きの説明\n{self.END}",
+        ):
+            with self.subTest(markers=markers):
+                original = f"# 文字列\n\n{markers}\n"
+                index = self.write("分野/文字列/文字列.md", original)
+                self.cli("sync-domain-links", code=1)
+                self.assertEqual(index.read_text(encoding="utf-8"), original)
+
+    def test_sync_preserves_existing_list_if_proposals_have_an_unclosed_fence(self):
+        content = f"# 配列\n\n{self.BEGIN}\n\n- [OK](OK.md)\n\n{self.END}\n"
+        index = self.write("分野/配列/配列.md", content)
+        self.write("分野/配列/OK.md", "# OK\n")
+        self.write("管理/追加候補.md", "```markdown\n" + self.proposal("OK", "../分野/配列/OK.md"))
+        self.cli("sync-domain-links", code=1)
+        self.assertEqual(index.read_text(encoding="utf-8"), content)
 
 
 class InboxTests(InboxFixture, unittest.TestCase):

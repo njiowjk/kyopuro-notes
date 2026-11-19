@@ -19,6 +19,7 @@ from atc_source import (
     ERROR_LABELS, EXTENSIONS, MAX_SOURCE_BYTES, SourceError, fetch_source, is_problem_index,
 )
 from atcoder import ATCODER_ID, InvalidURL, parse_url
+from domain_links import DomainLinkError, PROPOSALS, plan_domain_links
 
 if os.name == "nt":
     import msvcrt
@@ -216,15 +217,16 @@ def render_inbox(records):
     return "\n".join(lines)
 
 
-def atomic_write(path, content, local, *, immutable=False):
-    # Temporary files also stay inside the Git-ignored directory.
+def atomic_write(path, content, directory, *, immutable=False, mode=None):
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(dir=local, delete=False) as stream:
+        with tempfile.NamedTemporaryFile(dir=directory, suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        if mode is not None:
+            temporary.chmod(mode)
         if immutable:
             os.link(temporary, path)
         else:
@@ -435,7 +437,29 @@ def run_resolve(path, args):
     return int(bool(counts["pending"] or counts["blocked"]))
 
 
+def sync_domain_links():
+    proposals = VAULT / PROPOSALS
+    original = proposals.read_bytes()
+    updates, unmanaged = plan_domain_links(VAULT, proposals, original)
+    written = 0
+    for index, before, after in updates:
+        if proposals.read_bytes() != original or index.resolve() != index:
+            raise DomainLinkError("追加候補または分野入口が編集中に変更されました。再実行してください。")
+        current = index.read_bytes()
+        if current not in (before, after):
+            raise DomainLinkError("追加候補または分野入口が編集中に変更されました。再実行してください。")
+        if current != after:
+            atomic_write(index, after, index.parent, mode=stat.S_IMODE(index.stat().st_mode))
+            written += 1
+    print(f"分野入口 {written}件を更新しました。")
+    if unmanaged:
+        print(f"管理領域のある入口が見つからない分野は {', '.join(unmanaged)} です。")
+    return 0
+
+
 def run_command(args):
+    if args.command == "sync-domain-links":
+        return sync_domain_links()
     fields = parse_url(args.url) if args.command == "add" else None
     if fields is not None and fields["kind"] != "problem":
         raise InvalidURL("新規登録にはAtCoderの問題URL（/tasks/…）を指定してください。")
@@ -486,13 +510,14 @@ def main():
     resolve.add_argument("--accept-source-change", action="store_true", help="変更後のソースを新しい版として採用")
     commands.add_parser("list", help="未整理URLとローカルソースの取得状態を表示")
     commands.add_parser("rebuild", help="Inbox.mdを原本から再生成")
+    commands.add_parser("sync-domain-links", help="作成済みの解法ノートを分野入口の管理領域に同期")
     args = parser.parse_args()
     try:
         return run_command(args)
-    except (InboxError, InvalidURL) as error:
+    except (DomainLinkError, InboxError, InvalidURL) as error:
         print(f"エラー: {error}", file=sys.stderr)
         return 1
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, UnicodeError):
         print("エラー: ローカルファイルまたはWorkspaceを処理できません。", file=sys.stderr)
         return 1
 

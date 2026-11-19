@@ -3,7 +3,7 @@ task_id: abc388_c
 problem_url: https://atcoder.jp/contests/abc388/tasks/abc388_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Various Kagamimochi
@@ -22,14 +22,14 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [ソート済み配列で条件を満たすペアを数える](../../分野/配列/ソート済み配列で条件を満たすペアを数える.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [尺取り法](../../アルゴリズム/尺取り法.md)
 - [STL / sort・search（境界から個数を求める）](../../STL/sort-search.md)
-
-C++テンプレート案「ソート済み配列で条件を満たすペアを数える」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

@@ -3,7 +3,7 @@ task_id: abc386_c
 problem_url: https://atcoder.jp/contests/abc386/tasks/abc386_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Operate 1
@@ -24,13 +24,13 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [1回以内の文字編集で一致するか判定](../../分野/文字列/1回以内の文字編集で一致するか判定.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / string（文字列の比較・接頭辞と接尾辞）](../../STL/string.md)
-
-C++テンプレート案「1回以内の文字編集で一致するか判定」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

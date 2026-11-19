@@ -3,7 +3,7 @@ task_id: abc393_c
 problem_url: https://atcoder.jp/contests/abc393/tasks/abc393_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Make it Simple
@@ -22,14 +22,14 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [無向グラフから自己ループと多重辺を除く](../../分野/グラフ/無向グラフから自己ループと多重辺を除く.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / pair・tuple](../../STL/pair-tuple.md)
 - [STL / set・map](../../STL/set-map.md)
-
-C++テンプレート案「無向グラフから自己ループと多重辺を除く」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 

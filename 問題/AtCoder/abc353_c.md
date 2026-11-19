@@ -3,7 +3,7 @@ task_id: abc353_c
 problem_url: https://atcoder.jp/contests/abc353/tasks/abc353_c
 submission_urls: []
 representative_submission_url:
-status: unorganized
+status: organized
 ---
 
 # C - Sigma Problem
@@ -24,14 +24,14 @@ status: unorganized
 
 <!-- BEGIN AUTO: related-solutions -->
 
+- [ソート済み配列で条件を満たすペアを数える](../../分野/配列/ソート済み配列で条件を満たすペアを数える.md)
+
 <!-- END AUTO: related-solutions -->
 
 ### 関連する既存ノート
 
 - [STL / sort・search](../../STL/sort-search.md)
 - [mod計算](../../数学/mod計算.md)
-
-C++テンプレート案「ソート済み配列で条件を満たすペアを数える」は[解法ノートの追加候補](../../管理/追加候補.md)を参照。承認待ち。
 
 ## 問題固有の実装ポイント
 
