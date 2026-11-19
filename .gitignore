@@ -45,3 +45,7 @@ id_ed25519
 credentials.json
 cookies.txt
 session.json
+
+# ローカル専用の Inbox
+/.local/
+/Inbox.md
