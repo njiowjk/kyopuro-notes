@@ -1,0 +1,47 @@
+# Obsidian: 共有する設定
+/.obsidian/*
+!/.obsidian/app.json
+!/.obsidian/core-plugins.json
+!/.obsidian/graph.json
+/.trash/
+
+# OS・エディタ・一時ファイル
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.cache/
+*.tmp
+*.swp
+*~
+
+# C++ のビルド生成物
+*.exe
+*.out
+*.o
+*.obj
+*.dSYM/
+
+# 環境設定・認証情報
+.env
+.env.*
+.envrc
+.netrc
+.npmrc
+.pypirc
+.git-credentials
+.ssh/
+.aws/
+.gnupg/
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+cookies.txt
+session.json
