@@ -13,6 +13,7 @@ import re
 import stat
 import sys
 import tempfile
+import tomllib
 
 from atc_source import (
     ERROR_LABELS, EXTENSIONS, MAX_SOURCE_BYTES, SourceError, fetch_source, is_problem_index,
@@ -332,9 +333,50 @@ def update_source(record, export, local, accept_change):
     return updated
 
 
+def load_configured_workspace(config_path):
+    try:
+        with config_path.open("rb") as file:
+            config = tomllib.load(file)
+    except FileNotFoundError:
+        raise InboxError(".local/config.toml がありません。atc.workspace を設定するか、--workspace を指定してください。") from None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raise InboxError(".local/config.toml を有効なUTF-8のTOMLとして読み込めません。") from None
+    except OSError:
+        raise InboxError(".local/config.toml を読み込めません。") from None
+
+    atc = config.get("atc", {})
+    if not isinstance(atc, dict):
+        raise InboxError(".local/config.toml の atc はTOMLテーブルで指定してください。")
+    value = atc.get("workspace")
+    if value is None:
+        raise InboxError(".local/config.toml の atc.workspace が未設定です。設定するか、--workspace を指定してください。")
+    if not isinstance(value, str) or not value.strip():
+        raise InboxError(".local/config.toml の atc.workspace は空でない文字列で指定してください。")
+    try:
+        workspace = Path(value).expanduser()
+    except RuntimeError:
+        raise InboxError("atc.workspace のホームディレクトリを展開できません。") from None
+    if not workspace.is_absolute():
+        raise InboxError("atc.workspace には絶対パスを指定してください。")
+
+    try:
+        workspace = Path(os.path.abspath(workspace))
+        mode = workspace.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        raise InboxError("atc.workspace のディレクトリが存在しません。") from None
+    except (OSError, ValueError):
+        raise InboxError("atc.workspace のパスを確認できません。") from None
+    if not stat.S_ISDIR(mode):
+        raise InboxError("atc.workspace のパスはディレクトリではありません。")
+    return workspace
+
+
 def run_resolve(path, args):
     local = path.parent
-    workspace = Path(os.path.abspath(Path(args.workspace).expanduser())) if args.workspace else Path.cwd()
+    if args.workspace is not None:
+        workspace = Path(os.path.abspath(Path(args.workspace).expanduser()))
+    else:
+        workspace = load_configured_workspace(local / "config.toml")
     with file_lock(local / "resolve.lock"):
         records = read_records(path)
         issues = conflict_urls(records)
@@ -439,7 +481,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("add", help="AtCoderの問題URLを登録").add_argument("url")
     resolve = commands.add_parser("resolve", help="atc-rsからローカルソースを取得")
-    resolve.add_argument("--workspace", help="atc-rs Workspace root（省略時は現在のディレクトリ）")
+    resolve.add_argument("--workspace", help="atc-rs Workspace root（省略時は .local/config.toml の atc.workspace）")
     resolve.add_argument("--language", choices=tuple(EXTENSIONS), help="取得する言語を選択")
     resolve.add_argument("--accept-source-change", action="store_true", help="変更後のソースを新しい版として採用")
     commands.add_parser("list", help="未整理URLとローカルソースの取得状態を表示")

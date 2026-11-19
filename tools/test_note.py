@@ -43,7 +43,7 @@ class InboxFixture:
     def setUp(self):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
-        self.root = Path(root.name)
+        self.root = Path(root.name).resolve()
         self.tools = self.root / "tools"
         self.tools.mkdir()
         source = Path(note.__file__).parent
@@ -68,13 +68,14 @@ class InboxFixture:
             **os.environ, "PATH": str(self.bin), "NOTE_ATC_FIXTURE": str(self.fixture), "PYTHONUTF8": "1",
         }
         self.source = self.root / ".local" / "inbox.jsonl"
+        self.config = self.source.with_name("config.toml")
         self.view = self.root / "Inbox.md"
         self.snapshots = self.root / ".local" / "sources"
 
-    def cli(self, *args, code=0):
+    def cli(self, *args, code=0, cwd=None):
         result = subprocess.run(
             [sys.executable, "-B", self.tools / "note.py", *args],
-            cwd=self.root,
+            cwd=self.root if cwd is None else cwd,
             env=self.env,
             capture_output=True,
             encoding="utf-8",
@@ -124,6 +125,7 @@ class InboxTests(InboxFixture, unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), before)
         self.assertIn(PROBLEM, self.cli("list").stdout)
         self.assertFalse(self.calls())
+        self.assertFalse(self.config.exists())
 
     def test_legacy_submissions_are_kept_byte_for_byte(self):
         legacy = (

@@ -10,6 +10,89 @@ import note
 from test_note import CPP, InboxFixture, PROBLEM, PYTHON
 
 
+class ResolveWorkspaceTests(InboxFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.cli("add", PROBLEM)
+        self.fixture_result()
+
+    def configure(self, workspace):
+        value = json.dumps(str(workspace), ensure_ascii=False)
+        self.config.write_text(f"[atc]\nworkspace = {value}\n", encoding="utf-8")
+
+    def assert_config_error(self, message):
+        before = self.source.read_bytes()
+        result = self.cli("resolve", code=1)
+        self.assertIn(message, result.stderr)
+        self.assertFalse(self.calls())
+        self.assertEqual(self.source.read_bytes(), before)
+        return result.stderr
+
+    def test_resolve_with_configured_workspace(self):
+        self.configure(self.workspace)
+        self.cli("resolve")
+        self.assertEqual(self.calls()[0][-3:], ["--workspace", str(self.workspace), "--json"])
+        self.assertEqual(self.rows()[0]["status"], "resolved")
+        self.assertNotIn(str(self.workspace), self.view.read_text(encoding="utf-8"))
+
+    def test_cli_workspace_overrides_config(self):
+        self.configure(self.root)
+        self.cli("resolve", "--workspace", self.workspace.name)
+        self.assertEqual(self.calls()[0][-3:], ["--workspace", str(self.workspace), "--json"])
+
+    def test_cli_workspace_skips_invalid_config(self):
+        self.config.write_text("[atc\n", encoding="utf-8")
+        self.resolve()
+        self.assertEqual(self.rows()[0]["status"], "resolved")
+
+    def test_resolve_without_config_file(self):
+        error = self.assert_config_error(".local/config.toml がありません")
+        self.assertIn("--workspace", error)
+        self.assertFalse(self.config.exists())
+
+    def test_resolve_without_workspace_key(self):
+        for content in ("", "[atc]\n"):
+            with self.subTest(content=content):
+                self.config.write_text(content, encoding="utf-8")
+                error = self.assert_config_error("atc.workspace が未設定")
+                self.assertIn("--workspace", error)
+
+    def test_resolve_with_invalid_toml(self):
+        for content in (b"[atc\n", b"\xff"):
+            with self.subTest(content=content):
+                self.config.write_bytes(content)
+                self.assert_config_error(".local/config.toml を有効なUTF-8のTOMLとして読み込めません")
+
+    def test_resolve_with_invalid_workspace_value(self):
+        for value in ('""', "42"):
+            with self.subTest(value=value):
+                self.config.write_text(f"[atc]\nworkspace = {value}\n", encoding="utf-8")
+                self.assert_config_error("atc.workspace は空でない文字列で指定してください")
+
+    def test_resolve_with_relative_workspace(self):
+        self.configure(self.workspace.name)
+        self.assert_config_error("atc.workspace には絶対パスを指定してください")
+
+    def test_resolve_with_missing_workspace_directory(self):
+        self.configure(self.root / "missing")
+        self.assert_config_error("atc.workspace のディレクトリが存在しません")
+
+    def test_resolve_with_workspace_pointing_to_file(self):
+        self.configure(self.fixture)
+        self.assert_config_error("atc.workspace のパスはディレクトリではありません")
+
+    def test_resolve_expands_workspace_home(self):
+        self.env.update(HOME=str(self.root), USERPROFILE=str(self.root))
+        self.configure(f"~/{self.workspace.name}")
+        self.cli("resolve")
+        self.assertEqual(self.calls()[0][-3:], ["--workspace", str(self.workspace), "--json"])
+
+    def test_resolve_reads_vault_config_from_another_cwd(self):
+        self.configure(self.workspace)
+        self.cli("resolve", cwd=self.bin)
+        self.assertEqual(self.rows()[0]["status"], "resolved")
+
+
 class ResolveTests(InboxFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
