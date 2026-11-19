@@ -4,7 +4,6 @@ import argparse
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,7 +11,14 @@ import re
 import sys
 import tempfile
 import time
+
+from atc_cookie import load_session_cookie
 from atcoder import ATCODER_ID, InvalidURL, ResolutionError, fetch_task, parse_url
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 VAULT = Path(__file__).resolve().parents[1]
@@ -35,6 +41,12 @@ ERROR_LABELS = {
     "task_conflict": "同じtask IDに異なる問題URL",
     "submission_conflict": "同じ提出IDに異なる提出URLまたは問題URL",
     "task_id_mismatch": "既存のtask IDとページ上のtask IDが不一致",
+}
+COOKIE_WARNINGS = {
+    "permissions": "ファイルまたは保存先の権限を確認できません。",
+    "path": "保存先が安全な通常のファイルを指していません。",
+    "format": "保存形式が正しくありません。",
+    "read": "ファイルを読み取れません。",
 }
 
 
@@ -265,7 +277,11 @@ def atomic_write(path, content, local):
 def file_lock(path):
     # Use a separate inode so replacing data never invalidates the lock.
     with path.open("ab") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.name == "nt":
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
 
@@ -288,6 +304,7 @@ def write_view(local, records, *, saved):
 def fetch_pending(records):
     issues = conflicts(records)
     outcomes = {}
+    session = None
     for record in records:
         url = record["url"]
         if (
@@ -299,13 +316,20 @@ def fetch_pending(records):
             continue
         if outcomes:
             time.sleep(REQUEST_INTERVAL_SECONDS)
+        if session is None:
+            session = load_session_cookie()
+            if notice := COOKIE_WARNINGS.get(session.state):
+                print(f"atc-rsの認証情報を使用せず取得します。{notice}", file=sys.stderr)
         try:
-            outcomes[url] = fetch_task(url)
+            if session.header is None:
+                outcomes[url] = fetch_task(url)
+            else:
+                outcomes[url] = fetch_task(url, session=session)
         except ResolutionError as error:
             outcomes[url] = error
             if error.code == "http_429":
                 break
-    return outcomes
+    return outcomes, session.state if session is not None else None
 
 
 def apply_resolutions(records, outcomes):
@@ -345,7 +369,7 @@ def run_resolve(source):
     local = source.parent
     with file_lock(local / "resolve.lock"):
         # Allow offline registration while network requests are in progress.
-        outcomes = fetch_pending(read_records(source))
+        outcomes, session_state = fetch_pending(read_records(source))
         with file_lock(local / "inbox.lock"):
             records = read_records(source)
             updated = apply_resolutions(records, outcomes)
@@ -366,7 +390,16 @@ def run_resolve(source):
     )
     for reason, count in sorted(retryable.items()):
         print(f"再試行待ち {count}件（{reason}）")
-    if any(isinstance(result, ResolutionError) and result.code == "http_429" for result in outcomes.values()):
+    failure_codes = {result.code for result in outcomes.values() if isinstance(result, ResolutionError)}
+    if "http_403" in failure_codes:
+        if session_state == "loaded":
+            context = "atc-rsの保存済み認証情報を送信しました。"
+        elif session_state == "missing":
+            context = "atc-rsの保存済み認証情報が見つからず、未認証で取得しました。"
+        else:
+            context = "atc-rsの保存済み認証情報を読み込めず、未認証で取得しました。"
+        print(f"HTTP 403。{context} 403の原因やセッションの有効性は確認できません。")
+    if "http_429" in failure_codes:
         print("HTTP 429のため後続の取得を中止しました。時間をおいて再実行してください。")
     print(
         f"今回の解決 {transitions['resolved']}件、保留 {transitions['blocked']}件。"

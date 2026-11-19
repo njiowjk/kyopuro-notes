@@ -1,4 +1,4 @@
-"""Read task links from public AtCoder submission pages."""
+"""Read task links from AtCoder submission pages."""
 
 from html.parser import HTMLParser
 from http.client import HTTPException
@@ -100,8 +100,8 @@ def extract_task(html, submission_url):
     try:
         parser.feed(html)
         parser.close()
-    except AssertionError as error:
-        raise ResolutionError("unexpected_page") from error
+    except AssertionError:
+        raise ResolutionError("unexpected_page") from None
     candidates = {}
     for href in parser.links:
         try:
@@ -120,7 +120,7 @@ def extract_task(html, submission_url):
 def check_submission_url(expected, actual):
     try:
         parsed = parse_url(actual)
-    except InvalidURL as error:
+    except InvalidURL:
         # A same-origin redirect to /login, for example, may be temporary.
         try:
             parts = urlsplit(actual)
@@ -130,8 +130,8 @@ def check_submission_url(expected, actual):
             "atcoder.jp", "atcoder.jp:443"
         )
         if same_origin:
-            raise ResolutionError("unexpected_page") from error
-        raise ResolutionError("unsafe_redirect", blocked=True) from error
+            raise ResolutionError("unexpected_page") from None
+        raise ResolutionError("unsafe_redirect", blocked=True) from None
     if parsed["url"] != expected:
         raise ResolutionError("unexpected_page", blocked=True)
 
@@ -146,7 +146,11 @@ class SubmissionRedirectHandler(HTTPRedirectHandler):
         except ResolutionError:
             fp.close()
             raise
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        cookie = req.unredirected_hdrs.get("Cookie")
+        if redirected is not None and cookie is not None:
+            redirected.add_unredirected_header("Cookie", cookie)
+        return redirected
 
     # Validate Location before urllib's own parsing or redirect-scheme checks.
     def http_error_302(self, req, fp, code, msg, headers):
@@ -154,9 +158,9 @@ class SubmissionRedirectHandler(HTTPRedirectHandler):
         if location:
             try:
                 target = urljoin(req.full_url, location)
-            except ValueError as error:
+            except ValueError:
                 fp.close()
-                raise ResolutionError("unsafe_redirect", blocked=True) from error
+                raise ResolutionError("unsafe_redirect", blocked=True) from None
             try:
                 check_submission_url(parse_url(req.full_url)["url"], target)
             except ResolutionError:
@@ -167,13 +171,15 @@ class SubmissionRedirectHandler(HTTPRedirectHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
-def fetch_task(submission_url):
+def fetch_task(submission_url, *, session=None):
     submission = parse_url(submission_url)
     if submission["kind"] != "submission":
         raise InvalidURL("提出URLを指定してください。")
     url = submission["url"]
     opener = build_opener(ProxyHandler({}), SubmissionRedirectHandler())
     request = Request(url, headers={"User-Agent": "kyopuro-notes/1.0", "Accept": "text/html"})
+    if session is not None and session.header is not None:
+        request.add_unredirected_header("Cookie", session.header)
     try:
         with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             check_submission_url(url, response.geturl())
@@ -182,14 +188,16 @@ def fetch_task(submission_url):
             html = response.read(MAX_HTML_BYTES + 1)
     except HTTPError as error:
         error.close()
-        raise ResolutionError(f"http_{error.code}") from error
-    except TimeoutError as error:
-        raise ResolutionError("timeout") from error
+        failure = f"http_{error.code}"
+    except TimeoutError:
+        failure = "timeout"
     except URLError as error:
-        code = "timeout" if isinstance(error.reason, TimeoutError) else "network"
-        raise ResolutionError(code) from error
-    except (OSError, HTTPException) as error:
-        raise ResolutionError("network") from error
-    if len(html) > MAX_HTML_BYTES:
-        raise ResolutionError("html_too_large")
-    return extract_task(html.decode("utf-8", errors="replace"), url)
+        failure = "timeout" if isinstance(error.reason, TimeoutError) else "network"
+    except (OSError, HTTPException, ValueError):
+        failure = "network"
+    else:
+        if len(html) > MAX_HTML_BYTES:
+            raise ResolutionError("html_too_large")
+        return extract_task(html.decode("utf-8", errors="replace"), url)
+    # Keep raw HTTP errors and their response headers out of the exception chain.
+    raise ResolutionError(failure)

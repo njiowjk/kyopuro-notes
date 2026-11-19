@@ -26,6 +26,7 @@ class InboxTests(unittest.TestCase):
         self.script.parent.mkdir()
         shutil.copyfile(note.__file__, self.script)
         shutil.copyfile(Path(note.__file__).with_name("atcoder.py"), self.script.with_name("atcoder.py"))
+        shutil.copyfile(Path(note.__file__).with_name("atc_cookie.py"), self.script.with_name("atc_cookie.py"))
         self.source = self.root / ".local" / "inbox.jsonl"
         self.view = self.root / "Inbox.md"
 

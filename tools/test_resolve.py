@@ -12,6 +12,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 import atcoder
 import note
+from atc_cookie import SessionCookie
 
 
 BASE = "https://atcoder.jp/contests/example"
@@ -133,6 +134,9 @@ class ResolveInboxTests(unittest.TestCase):
         self.view = self.root / "Inbox.md"
         self.enterContext(patch.object(note, "VAULT", self.root))
         self.sleep = self.enterContext(patch.object(note.time, "sleep"))
+        self.load_cookie = self.enterContext(
+            patch.object(note, "load_session_cookie", return_value=SessionCookie("missing"))
+        )
         self.fetch = self.enterContext(patch.object(note, "fetch_task"))
         self.fetch.side_effect = AssertionError("unexpected network request")
 
