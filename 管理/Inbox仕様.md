@@ -1,35 +1,34 @@
 # ローカル Inbox
 
-AtCoderの提出URL・問題URLはVaultルートの `.local/inbox.jsonl` に保存する。ルートの `Inbox.md` はObsidianで見る未処理一覧とし、JSONLから再生成できる表示用ファイルとする。両方ともGit管理から除外する。登録・一覧表示・再生成のコマンドは [CLIの使い方](../tools/README.md) を参照する。
+問題URLの登録原本はVaultの `.local/inbox.jsonl`、照合したローカルソースは `.local/sources/` に保存する。Vaultルートの `Inbox.md` は原本から再生成できる状態一覧とする。いずれもGit管理から除外する。[CLIの使い方](../tools/README.md)
 
-## 保存形式
+## JSONLの記録
 
-`.local/inbox.jsonl` はUTF-8で、正規化済みURLごとに1行のJSONオブジェクトを持つ。
+UTF-8で、正規化済み問題URLにつき1行とする。末尾のスラッシュ、クエリ、フラグメントを除いたURLで重複を判定し、最初の登録日時を保持する。
 
 | 項目 | 内容 |
 |---|---|
 | `schema_version` | 整数の `1` |
-| `kind` | `submission` または `problem` |
-| `url` | 正規化済みのAtCoder URL。整理後も原本に保持する |
-| `contest_id` | URLのコンテストID |
-| `submission_id` | 提出IDの文字列。問題URLでは `null` |
-| `task_id` | 問題URLから取得したtask ID。提出URLの登録時は `null` |
-| `registered_at` | タイムゾーン付きISO 8601形式の登録日時。新規登録ではUTC |
-| `status` | 登録時は `pending`（未整理）。後続の整理で `organized`（整理済み）にできる |
+| `kind` | 新規登録は `problem` |
+| `url` | 正規化済みのAtCoder問題URL |
+| `contest_id`、`task_id` | 問題URLの各識別子 |
+| `submission_id` | 問題URLでは `null` |
+| `registered_at` | タイムゾーン付きISO 8601形式 |
+| `status` | 以下の整理状態 |
+| `local_source` | 取得時の `origin: atc-rs-local`、`index`、`language`、`sha256` |
+| `resolution_error` | 取得待ちや保留の理由を示す固定コード |
 
-架空のURLを使った保存例。
+| 状態 | 意味 |
+|---|---|
+| `pending` | まだ取得できていない、または改版の確認待ち |
+| `resolved` | 問題メタデータとローカルソースの照合が完了 |
+| `organized` | 問題ノートと解法ノートの整理が完了 |
+| `blocked` | 問題識別子または保存データの整合性に矛盾があり要確認 |
 
-```jsonl
-{"schema_version":1,"kind":"submission","url":"https://atcoder.jp/contests/example/submissions/900000001","contest_id":"example","submission_id":"900000001","task_id":null,"registered_at":"2026-11-19T03:00:00+00:00","status":"pending"}
-{"schema_version":1,"kind":"problem","url":"https://atcoder.jp/contests/example/tasks/another_task_a","contest_id":"example","submission_id":null,"task_id":"another_task_a","registered_at":"2026-11-19T03:05:00+00:00","status":"pending"}
-```
+同じtask IDに異なる問題URLがある場合は両方を保持し、照合を保留する。旧Inboxの提出URLは行・日時を保持し、一覧の別欄に表示する。旧方式で `resolved` になった問題も、ローカルソースの記録がなければ取得待ちとして扱う。変更対象外のJSONL行はそのまま保存される。
 
-## 登録と整理
+## 保存と再実行
 
-1. `atcoder.jp` のHTTPS URLから、`/contests/{contest}/submissions/{submission_id}` または `/contests/{contest}/tasks/{task_id}` を受け付ける。提出IDは数字とし、ユーザー情報や非標準ポートを含むURLは拒否する。末尾のスラッシュ、クエリ、フラグメントを除いたURLで重複を判定し、元の登録日時を保つ。別々の提出URLは個別に保持する。登録はローカルの保存と一覧更新までとする。
-2. 後続の整理処理で、提出URLから実際の task ID を解決する。同じタスクを指すURLは1件の問題ノートにまとめる。公開してよい情報を判断したうえで、[分類ルール](分類ルール.md) に従って問題ノートと双方向リンクを更新する。
-3. 問題ノートへの反映と両方向のリンクを確認した項目は、原本で `status` を `organized` にする。未処理一覧には `pending` の項目を表示する。取得できない項目や承認待ちの項目は `pending` のままにする。
+ソースは `.local/sources/<sha256>.cpp` または `.local/sources/<sha256>.py` にUTF-8バイト列として保存する。JSONLにはatc-rsが返す絶対パスやソース本文を記録しない。元ファイルのパスやコードはMarkdownに転記しない。
 
-Phase 1の `kind`・`url`・`registered_at` の3項目だけを持つ行も読み取れる。新規URLを追加するときに、そのような既存行もバージョン1に揃える。未対応のバージョンや不正な行を検出した場合は、行番号を表示して更新を中止する。
-
-登録と再生成は同時に書き込まないよう調整し、原本と一覧はそれぞれ完成した一時ファイルから置き換える。原本を保存したあとに一覧の更新が失敗した場合、登録済みのURLは原本に残る。`rebuild` または同じURLの再登録で一覧を復旧できる。
+同じSHA-256のファイルは、内容を確認して再利用する。新旧でソースが異なる場合は、確認を受けたあとで新しいスナップショットを採用し、前のファイルを保持する。ソースを安全に保存した後で原本を一時ファイル経由で置き換える。原本の保存だけ失敗した場合、再実行時に保存済みのソースを検証して復旧できる。[照合と再実行](../tools/resolve.md)

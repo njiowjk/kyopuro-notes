@@ -1,16 +1,15 @@
-# AtCoder Inbox にURLを登録する
+# AtCoderの問題をInboxに登録する
 
-macOS・Linux の Python 3.11 以降で動作します。以下はVaultのルートから実行する例です。
+Python 3.11以降を使います。ローカルソースの照合には、`atc source` を備えたatc-rsがPATH上に必要です。
 
 ```sh
-python3 tools/note.py add 'https://atcoder.jp/contests/example/submissions/900000001'
-python3 tools/note.py add 'https://atcoder.jp/contests/example/tasks/another_task_a'
+python3 tools/note.py add 'https://atcoder.jp/contests/abc484/tasks/abc484_a'
+python3 tools/note.py resolve --workspace ~/atcoder-submittion
 python3 tools/note.py list
-python3 tools/note.py rebuild
 ```
 
-例の代わりに自分の提出URLか問題URLを1つ貼ってください。登録後、ObsidianでVaultルートの `Inbox.md` を開くと一覧が見られます。提出URLの task ID は「未解決」と表示されます。登録と再生成はローカルで完結します。
+`add` にはAtCoderの問題URLを指定します。登録時はPython内でURLを検証し、問題と登録日時を記録します。解決後は `list` またはVaultルートの `Inbox.md` で取得状態を確認できます。一覧の再生成は `python3 tools/note.py rebuild` です。
 
-`.local/inbox.jsonl` が原本です。一覧を消した場合や更新に失敗した場合は、エラーの原因を解消し、`rebuild` で戻せます。どちらもGitの除外対象です。詳しくは [Inbox仕様](../管理/Inbox仕様.md) を参照してください。
+原本、スナップショット、生成した一覧はGitの除外対象です。[照合と再実行](resolve.md)・[Inbox仕様](../管理/Inbox仕様.md)
 
 テストは `python3 -B -m unittest discover -s tools` で実行できます。

@@ -1,295 +1,219 @@
-from email.message import Message
-from http.client import IncompleteRead
-from io import BytesIO, StringIO
+import hashlib
 import json
-from pathlib import Path
+import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import Mock, patch
-from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request
+from unittest.mock import patch
 
-import atcoder
+import atc_source
 import note
-from atc_cookie import SessionCookie
+from test_note import CPP, InboxFixture, PROBLEM, PYTHON
 
 
-BASE = "https://atcoder.jp/contests/example"
-SUBMISSION = BASE + "/submissions/900000001"
-SECOND = BASE + "/submissions/900000002"
-THIRD = BASE + "/submissions/900000003"
-PROBLEM = BASE + "/tasks/reused_task_a"
-OTHER_PROBLEM = BASE + "/tasks/different_b"
-HTML = (Path(__file__).parent / "fixtures" / "submission.html").read_text(encoding="utf-8")
-
-
-def response(html=HTML, *, url=SUBMISSION, content_type="text/html"):
-    reply = Mock()
-    reply.__enter__ = Mock(return_value=reply)
-    reply.__exit__ = Mock(return_value=False)
-    reply.status = 200
-    reply.headers = Message()
-    reply.headers["Content-Type"] = content_type
-    reply.geturl.return_value = url
-    reply.read.return_value = html.encode()
-    return reply
-
-
-class AtCoderTests(unittest.TestCase):
-    def test_valid_submission_returns_linked_task_and_skips_other_links(self):
-        opener = Mock()
-        opener.open.return_value = response(url=SUBMISSION + "?lang=ja")
-        with patch.object(atcoder, "build_opener", return_value=opener):
-            task = atcoder.fetch_task(SUBMISSION)
-        self.assertEqual(task["url"], PROBLEM)
-        self.assertEqual(task["task_id"], "reused_task_a")
-        self.assertEqual(task["contest_id"], "example")
-        request, = opener.open.call_args.args
-        self.assertEqual(request.full_url, SUBMISSION)
-        self.assertIsNone(request.get_header("Cookie"))
-        self.assertIsNone(request.get_header("Authorization"))
-        self.assertGreater(opener.open.call_args.kwargs["timeout"], 0)
-
-    def test_http_and_transport_failures_use_fixed_codes(self):
-        failures = [
-            (HTTPError(SUBMISSION, code, "private detail", {}, BytesIO()), f"http_{code}")
-            for code in (403, 404, 429)
-        ]
-        failures += [
-            (TimeoutError("private detail"), "timeout"),
-            (URLError(TimeoutError("private detail")), "timeout"),
-            (IncompleteRead(b""), "network"),
-        ]
-        for failure, expected in failures:
-            with self.subTest(expected=expected):
-                opener = Mock()
-                opener.open.side_effect = failure
-                with patch.object(atcoder, "build_opener", return_value=opener):
-                    with self.assertRaises(atcoder.ResolutionError) as raised:
-                        atcoder.fetch_task(SUBMISSION)
-                self.assertEqual(str(raised.exception), expected)
-                self.assertFalse(raised.exception.blocked)
-
-    def test_missing_external_or_ambiguous_task_links(self):
-        bad_urls = [
-            "https://outside.example/contests/example/tasks/reused_task_a",
-            "https://name@atcoder.jp/contests/example/tasks/reused_task_a",
-            "http://atcoder.jp/contests/example/tasks/reused_task_a",
-        ]
-        for url in bad_urls:
-            html = HTML.replace("../tasks/reused_task_a?lang=ja", url)
-            with self.subTest(url=url), self.assertRaisesRegex(atcoder.ResolutionError, "missing_task_link"):
-                atcoder.extract_task(html, SUBMISSION)
-        html = HTML.replace(
-            '<a href="/users/example">', '<a href="/contests/example/tasks/different_b">'
-        )
-        with self.assertRaisesRegex(atcoder.ResolutionError, "ambiguous_task_link") as raised:
-            atcoder.extract_task(html, SUBMISSION)
-        self.assertTrue(raised.exception.blocked)
-
-    def test_duplicate_task_links_and_other_contest_links(self):
-        target = "https://atcoder.jp/contests/original/tasks/reused_task_a"
-        html = HTML.replace("../tasks/reused_task_a?lang=ja", target)
-        html = html.replace("/users/example", target + "/?lang=en#top")
-        self.assertEqual(atcoder.extract_task(html, SUBMISSION)["url"], target)
-
-    def test_redirects_are_validated_before_the_opener_follows_them(self):
-        handler = atcoder.SubmissionRedirectHandler()
-        request = Request(SUBMISSION)
-        cases = [
-            ("//outside.example/contests/example/submissions/900000001", "unsafe_redirect"),
-            ("ftp://atcoder.jp/contests/example/submissions/900000001", "unsafe_redirect"),
-            ("/login", "unexpected_page"),
-            (SECOND, "unexpected_page"),
-        ]
-        with patch.object(HTTPRedirectHandler, "http_error_302") as follow:
-            for target, reason in cases:
-                with self.subTest(target=target), self.assertRaisesRegex(atcoder.ResolutionError, reason):
-                    handler.http_error_302(request, BytesIO(), 302, "", {"location": target})
-            follow.assert_not_called()
-            handler.http_error_302(request, BytesIO(), 302, "", {"location": SUBMISSION + "?lang=en"})
-            follow.assert_called_once()
-
-    def test_response_url_and_content_type_are_verified(self):
-        for url, content_type, reason in [
-            ("https://outside.example/", "text/html", "unsafe_redirect"),
-            (SECOND, "text/html", "unexpected_page"),
-            (SUBMISSION, "application/json", "unexpected_page"),
-        ]:
-            opener = Mock()
-            opener.open.return_value = response(url=url, content_type=content_type)
-            with self.subTest(url=url), patch.object(atcoder, "build_opener", return_value=opener):
-                with self.assertRaisesRegex(atcoder.ResolutionError, reason):
-                    atcoder.fetch_task(SUBMISSION)
-                opener.open.return_value.read.assert_not_called()
-
-
-class ResolveInboxTests(unittest.TestCase):
+class ResolveTests(InboxFixture, unittest.TestCase):
     def setUp(self):
-        workspace = tempfile.TemporaryDirectory()
-        self.addCleanup(workspace.cleanup)
-        self.root = Path(workspace.name)
-        self.source = self.root / ".local" / "inbox.jsonl"
-        self.view = self.root / "Inbox.md"
-        self.enterContext(patch.object(note, "VAULT", self.root))
-        self.sleep = self.enterContext(patch.object(note.time, "sleep"))
-        self.load_cookie = self.enterContext(
-            patch.object(note, "load_session_cookie", return_value=SessionCookie("missing"))
-        )
-        self.fetch = self.enterContext(patch.object(note, "fetch_task"))
-        self.fetch.side_effect = AssertionError("unexpected network request")
+        super().setUp()
+        self.cli("add", PROBLEM)
 
-    def cli(self, *args, expected=0):
-        with (
-            patch.object(sys, "argv", ["note.py", *args]),
-            patch.object(sys, "stdout", new_callable=StringIO) as out,
-            patch.object(sys, "stderr", new_callable=StringIO) as err,
+    def test_success_uses_exact_task_id_and_reuses_immutable_snapshot(self):
+        self.fixture_result()
+        registered = self.rows()[0]["registered_at"]
+        self.resolve()
+        self.assertEqual(self.calls(), [
+            ["source", "example", "--task-id", "reused_task_a", "--workspace", str(self.workspace), "--json"],
+        ])
+        record, = self.rows()
+        metadata = record["local_source"]
+        digest = hashlib.sha256(CPP.encode()).hexdigest()
+        self.assertEqual(metadata, {"origin": "atc-rs-local", "index": "A", "language": "cpp", "sha256": digest})
+        self.assertEqual(record["registered_at"], registered)
+        path, = self.snapshots.iterdir()
+        self.assertEqual(path.read_bytes(), CPP.encode())
+        self.assertEqual(path.name, digest + ".cpp")
+        fingerprint = self.source.read_bytes(), path.stat().st_mtime_ns
+        self.resolve()
+        self.assertEqual((self.source.read_bytes(), path.stat().st_mtime_ns), fingerprint)
+        rendered = self.cli("list").stdout
+        self.assertIn("ローカルソース照合済み", rendered)
+        self.assertIn(digest[:12], rendered)
+        self.assertNotIn(str(self.workspace), rendered + self.source.read_text(encoding="utf-8"))
+        self.assertNotIn("int main", rendered + self.view.read_text(encoding="utf-8"))
+
+    def test_mismatched_task_identity_blocks_without_writing_code(self):
+        self.fixture_result(task_id="some_other_task")
+        self.resolve(code=1)
+        self.assertEqual((self.rows()[0]["status"], self.rows()[0]["resolution_error"]),
+                         ("blocked", "identity_mismatch"))
+        self.assertFalse(self.snapshots.exists())
+
+    def test_problem_url_for_same_task_but_different_contest_is_not_merged(self):
+        another = PROBLEM.replace("/example/", "/reused/")
+        self.cli("add", another)
+        self.resolve(code=1)
+        self.assertEqual({r["resolution_error"] for r in self.rows()}, {"task_conflict"})
+        self.assertFalse(self.calls())
+
+    def test_bad_url_path_and_language_are_detected(self):
+        good = {
+            "schema_version": 1, "contest_id": "example", "index": "A",
+            "task_id": "reused_task_a", "url": PROBLEM, "language": "cpp",
+            "source_path": str(self.workspace / "example" / "A.cpp"), "source": CPP,
+        }
+        for changes, selection in (
+            ({"contest_id": "other"}, None),
+            ({"url": PROBLEM.replace("atcoder.jp", "example.org")}, None),
+            ({"source_path": str(self.root / "outside" / "example" / "A.cpp")}, None),
+            ({"source_path": str(self.workspace / "example" / "B.cpp")}, None),
+            ({}, "python"),
         ):
-            self.assertEqual(note.main(), expected, err.getvalue())
-        return out.getvalue(), err.getvalue()
+            with self.subTest(changes=changes, selection=selection):
+                with self.assertRaises(atc_source.SourceError) as raised:
+                    atc_source.parse_export(json.dumps({**good, **changes}).encode(), self.rows()[0],
+                                            self.workspace, selection)
+                self.assertEqual(raised.exception.code, "identity_mismatch")
 
-    def records(self):
-        return note.read_records(self.source)
+    def test_multiple_languages_require_explicit_choice(self):
+        self.fixture_error("multiple source files for problem A; select one with --language")
+        result = self.resolve(code=1)
+        self.assertIn("--language cpp", result.stdout)
+        self.assertEqual(self.rows()[0]["resolution_error"], "language_required")
+        self.assertEqual(self.rows()[0]["status"], "pending")
+        self.fixture_result(language="python", source=PYTHON, source_path=str(self.workspace / "example" / "A.py"))
+        self.resolve("--language", "python")
+        self.assertEqual(self.calls()[-1][-2:], ["--language", "python"])
+        self.assertEqual(self.rows()[0]["local_source"]["language"], "python")
 
-    def test_problem_url_resolves_without_network_and_legacy_rows_remain_readable(self):
-        self.cli("add", PROBLEM)
-        self.assertEqual(self.records()[0]["status"], "resolved")
-        record = {**self.records()[0], "status": "pending"}
-        self.source.write_text(json.dumps(record) + "\n", encoding="utf-8")
-        self.cli("resolve")
-        self.assertEqual(self.records()[0]["status"], "resolved")
-        self.assertEqual(self.records()[0]["problem_url"], PROBLEM)
-        self.fetch.assert_not_called()
+    def test_expected_cli_errors_keep_record_pending_and_hide_paths(self):
+        for message, code in (
+            ("contest directory not found:", "contest_missing"),
+            ("contest metadata not found:", "metadata_missing"),
+            ("task ID not found in contest", "task_missing"),
+            ("source file not found for problem A", "source_missing"),
+            ("unrecognized subcommand 'source'", "atc_unsupported"),
+            ("unknown atc error", "atc_failed"),
+        ):
+            with self.subTest(code=code):
+                self.fixture_error(message)
+                result = self.resolve(code=1)
+                self.assertNotIn(str(self.workspace), result.stdout + result.stderr)
+                self.assertEqual(self.rows()[0]["resolution_error"], code)
+                self.assertEqual(self.rows()[0]["status"], "pending")
+        self.assertFalse(self.snapshots.exists())
 
-    def test_groups_submissions_and_problem_record_without_losing_order_or_dates(self):
-        for url in (SECOND, SUBMISSION, PROBLEM, THIRD):
-            self.cli("add", url)
-        original = [(row["url"], row["registered_at"]) for row in self.records()]
-        self.fetch.side_effect = [
-            note.parse_url(PROBLEM),
-            note.parse_url(PROBLEM),
-            note.parse_url(OTHER_PROBLEM),
-        ]
-        self.cli("resolve")
-        records = self.records()
-        self.assertEqual([(row["url"], row["registered_at"]) for row in records], original)
-        groups, remaining = note.group_inbox(records)
-        self.assertEqual([group["task_id"] for group in groups], ["reused_task_a", "different_b"])
-        self.assertEqual([r["url"] for r in groups[0]["entries"]], [SECOND, SUBMISSION, PROBLEM])
-        self.assertIsNone(groups[0]["representative_submission_url"])
-        self.assertFalse(remaining)
-        self.assertFalse(any("verdict" in row for row in records))
-        markdown = self.view.read_text(encoding="utf-8")
-        self.assertEqual(markdown.count(f"### [reused_task_a]({PROBLEM})"), 1)
-        self.assertLess(markdown.index(SUBMISSION), markdown.index(SECOND))
-        self.assertEqual(self.sleep.call_count, 2)
-        before = self.source.read_bytes()
-        self.cli("resolve")
-        self.cli("rebuild")
-        self.assertEqual(self.fetch.call_count, 3)
-        self.assertEqual(self.source.read_bytes(), before)
-        self.assertIn(markdown.split("\n\n", 1)[1], self.cli("list")[0])
+    def test_missing_workspace_and_atc(self):
+        self.cli("resolve", "--workspace", str(self.root / "missing"), code=1)
+        self.assertEqual(self.rows()[0]["resolution_error"], "workspace_missing")
+        self.assertFalse(self.calls())
+        self.atc.unlink()
+        self.resolve(code=1)
+        self.assertEqual(self.rows()[0]["resolution_error"], "atc_missing")
 
-    def test_retryable_errors_keep_partial_success_and_stop_after_429(self):
-        fourth = BASE + "/submissions/900000004"
-        for url in (SUBMISSION, SECOND, THIRD, fourth):
-            self.cli("add", url)
-        self.fetch.side_effect = [
-            note.parse_url(PROBLEM),
-            atcoder.ResolutionError("http_403"),
-            atcoder.ResolutionError("http_429"),
-        ]
-        out, _ = self.cli("resolve")
-        self.assertIn("HTTP 429", out)
-        self.assertEqual([r["status"] for r in self.records()], ["resolved", "pending", "pending", "pending"])
-        self.assertEqual(self.fetch.call_count, 3)
-        self.fetch.reset_mock(side_effect=True)
-        self.fetch.return_value = note.parse_url(PROBLEM)
-        self.cli("resolve")
-        self.assertEqual([r["status"] for r in self.records()], ["resolved"] * 4)
-        self.assertFalse(any("resolution_error" in row for row in self.records()))
-        self.assertEqual([call.args[0] for call in self.fetch.call_args_list], [SECOND, THIRD, fourth])
+    def test_bad_json_and_schema_leave_snapshot_unwritten(self):
+        for raw in ("{corrupt", '{"a":1,"a":2}', "{} {}"):
+            self.fixture.write_text(json.dumps({"raw": raw}), encoding="utf-8")
+            self.resolve(code=1)
+            self.assertEqual(self.rows()[0]["resolution_error"], "invalid_json")
+        for kwargs in ({"schema_version": 2}, {"schema_version": True}, {"language": "rust"}, {"source": 1}):
+            self.fixture_result(**kwargs)
+            self.resolve(code=1)
+            self.assertEqual(self.rows()[0]["resolution_error"], "invalid_schema")
+        for source in ("\0", "\ud800", "x" * (atc_source.MAX_SOURCE_BYTES + 1)):
+            self.fixture_result(source=source)
+            self.resolve(code=1)
+            self.assertEqual(self.rows()[0]["resolution_error"], "invalid_source")
+        self.assertFalse(self.snapshots.exists())
 
-    def test_missing_and_ambiguous_links_are_distinct_states(self):
-        for url in (SUBMISSION, SECOND):
-            self.cli("add", url)
-        self.fetch.side_effect = [
-            atcoder.ResolutionError("missing_task_link"),
-            atcoder.ResolutionError("ambiguous_task_link", blocked=True),
-        ]
-        self.cli("resolve")
-        self.assertEqual([r["status"] for r in self.records()], ["pending", "blocked"])
-        self.assertTrue(all(row["task_id"] is None for row in self.records()))
-        self.assertIn("問題リンクが複数ある", self.view.read_text(encoding="utf-8"))
+    def test_empty_source_is_a_valid_exact_snapshot(self):
+        self.fixture_result(source="")
+        self.resolve()
+        path, = self.snapshots.iterdir()
+        self.assertEqual(path.read_bytes(), b"")
 
-    def test_same_task_id_with_different_problem_urls_is_not_grouped(self):
-        self.cli("add", PROBLEM)
-        self.cli("add", SUBMISSION)
-        other_url = PROBLEM.replace("/example/", "/different/")
-        self.fetch.side_effect = None
-        self.fetch.return_value = note.parse_url(other_url)
-        self.cli("resolve")
-        problem, submission = self.records()
-        self.assertEqual(problem["status"], "resolved")
-        self.assertEqual(submission["status"], "blocked")
-        self.assertEqual(submission["problem_url"], other_url)
-        groups, remaining = note.group_inbox(self.records())
-        self.assertFalse(groups)
-        self.assertEqual({r["resolution_error"] for r in remaining}, {"task_conflict"})
-        self.cli("resolve")
-        self.fetch.assert_called_once_with(SUBMISSION)
+    def test_timeout_is_retryable(self):
+        self.fixture.write_text(json.dumps({"wait": 3}), encoding="utf-8")
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(atc_source, "TIMEOUT_SECONDS", 0.15),
+            self.assertRaises(atc_source.SourceError) as raised,
+        ):
+            atc_source.fetch_source(self.rows()[0], self.workspace, None)
+        self.assertEqual(raised.exception.code, "timeout")
+        self.assertEqual(self.rows()[0]["status"], "pending")
 
-    def test_duplicate_numeric_submission_ids_are_held_without_request(self):
-        other_url = SUBMISSION.replace("/example/", "/different/").replace("900000001", "0900000001")
-        for url in (SUBMISSION, other_url):
-            self.cli("add", url)
-        self.cli("resolve")
-        self.fetch.assert_not_called()
-        self.assertEqual([r["url"] for r in self.records()], [SUBMISSION, other_url])
-        self.assertEqual({r["resolution_error"] for r in self.records()}, {"submission_conflict"})
+    def test_changed_source_requires_acceptance_and_keeps_both_snapshots(self):
+        self.fixture_result()
+        self.resolve()
+        old = self.rows()[0]["local_source"]
+        initial, = self.snapshots.iterdir()
+        self.fixture_result(source="int main() { return 1; }\n")
+        self.resolve(code=1)
+        waiting, = self.rows()
+        self.assertEqual(waiting["status"], "pending")
+        self.assertEqual(waiting["resolution_error"], "source_changed")
+        self.assertEqual(waiting["local_source"], old)
+        self.assertEqual(list(self.snapshots.iterdir()), [initial])
+        self.resolve("--accept-source-change")
+        new = self.rows()[0]["local_source"]
+        self.assertNotEqual(new["sha256"], old["sha256"])
+        self.assertEqual(initial.read_bytes(), CPP.encode())
+        self.assertEqual(len(list(self.snapshots.iterdir())), 2)
 
-    def test_existing_task_id_conflict_keeps_the_original_value(self):
-        self.cli("add", SUBMISSION)
-        record = {**self.records()[0], "task_id": "previous_a"}
-        self.source.write_text(json.dumps(record) + "\n", encoding="utf-8")
-        self.fetch.side_effect = None
-        self.fetch.return_value = note.parse_url(PROBLEM)
-        self.cli("resolve")
-        record = self.records()[0]
-        self.assertEqual(record["task_id"], "previous_a")
-        self.assertEqual(record["status"], "blocked")
-        self.assertEqual(record["resolution_error"], "task_id_mismatch")
-        self.assertNotIn("problem_url", record)
+    def test_changed_problem_index_blocks_even_with_acceptance(self):
+        self.fixture_result()
+        self.resolve()
+        original = self.rows()[0]["local_source"]
+        self.fixture_result(index="B", source_path=str(self.workspace / "example" / "B.cpp"))
+        self.resolve("--accept-source-change", code=1)
+        self.assertEqual(self.rows()[0]["status"], "blocked")
+        self.assertEqual(self.rows()[0]["local_source"], original)
 
-    def test_add_during_request_survives_the_resolver_save(self):
-        self.cli("add", SUBMISSION)
+    def test_existing_snapshot_with_wrong_content_is_never_overwritten(self):
+        self.fixture_result()
+        self.resolve()
+        snapshot, = self.snapshots.iterdir()
+        snapshot.write_text("unrelated", encoding="utf-8")
+        self.resolve("--accept-source-change", code=1)
+        self.assertEqual(self.rows()[0]["resolution_error"], "snapshot_conflict")
+        self.assertEqual(snapshot.read_text(encoding="utf-8"), "unrelated")
 
-        def register_during_fetch(url):
-            self.assertEqual(url, SUBMISSION)
-            self.cli("add", SECOND)
-            return note.parse_url(PROBLEM)
+    def test_save_failures_do_not_publish_dangling_records(self):
+        self.fixture_result()
+        previous = self.source.read_bytes()
+        argv = ["note.py", "resolve", "--workspace", str(self.workspace)]
+        real_write = note.atomic_write
 
-        self.fetch.side_effect = register_during_fetch
-        self.cli("resolve")
-        self.assertEqual(
-            [(r["url"], r["status"]) for r in self.records()],
-            [(SUBMISSION, "resolved"), (SECOND, "pending")],
-        )
+        def failure(path, content, local, **options):
+            if path == self.source:
+                raise OSError("simulated commit failure")
+            real_write(path, content, local, **options)
 
-    def test_original_is_safe_if_write_fails_and_view_rebuild_recovers(self):
-        self.cli("add", SUBMISSION)
-        original = self.source.read_bytes()
-        self.fetch.side_effect = None
-        self.fetch.return_value = note.parse_url(PROBLEM)
-        with patch.object(note.os, "replace", side_effect=OSError("interrupted write")):
-            self.cli("resolve", expected=1)
-        self.assertEqual(self.source.read_bytes(), original)
-        self.view.unlink()
-        self.view.mkdir()
-        self.cli("resolve", expected=1)
-        self.assertEqual(self.records()[0]["status"], "resolved")
-        self.view.rmdir()
-        self.cli("resolve")
-        self.assertIn(PROBLEM, self.view.read_text(encoding="utf-8"))
-        self.assertEqual(self.fetch.call_count, 2)
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(note, "VAULT", self.root),
+            patch.object(sys, "argv", argv),
+            patch.object(note, "atomic_write", side_effect=failure),
+            patch.object(sys, "stderr"),
+        ):
+            self.assertEqual(note.main(), 1)
+        self.assertEqual(self.source.read_bytes(), previous)
+        path, = self.snapshots.iterdir()
+        self.assertEqual(path.read_bytes(), CPP.encode())
+        self.resolve()
+        self.assertEqual(self.rows()[0]["status"], "resolved")
+        self.assertEqual(list(self.snapshots.iterdir()), [path])
+
+    def test_snapshot_write_failure_retains_pending(self):
+        self.fixture_result()
+        argv = ["note.py", "resolve", "--workspace", str(self.workspace)]
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(note, "VAULT", self.root),
+            patch.object(sys, "argv", argv),
+            patch.object(note.os, "link", side_effect=OSError("simulated storage failure")),
+            patch.object(sys, "stdout"),
+        ):
+            self.assertEqual(note.main(), 1)
+        self.assertEqual(self.rows()[0]["resolution_error"], "storage_error")
+        self.assertEqual(self.rows()[0]["status"], "pending")
+        self.assertNotIn("local_source", self.rows()[0])
+        self.assertFalse(list(self.snapshots.iterdir()))

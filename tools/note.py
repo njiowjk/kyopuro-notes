@@ -1,19 +1,23 @@
-"""Register and group AtCoder URLs in the local Obsidian inbox."""
+"""Register AtCoder problems and locate their local source in an Obsidian vault."""
 
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
-import time
 
-from atc_cookie import load_session_cookie
-from atcoder import ATCODER_ID, InvalidURL, ResolutionError, fetch_task, parse_url
+from atc_source import (
+    ERROR_LABELS, EXTENSIONS, MAX_SOURCE_BYTES, SourceError, fetch_source, is_problem_index,
+)
+from atcoder import ATCODER_ID, InvalidURL, parse_url
 
 if os.name == "nt":
     import msvcrt
@@ -23,35 +27,29 @@ else:
 
 VAULT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 1
-REQUEST_INTERVAL_SECONDS = 1
 STATUS_LABELS = {
-    "pending": "未整理（未解決）",
-    "resolved": "解決済み・未整理",
+    "pending": "取得待ち",
+    "resolved": "ローカルソース照合済み",
     "organized": "整理済み",
     "blocked": "保留",
 }
-ERROR_LABELS = {
-    "timeout": "タイムアウト",
-    "network": "通信エラー",
-    "unexpected_page": "提出ページを確認できない",
-    "unsafe_redirect": "許可されていないリダイレクトまたは応答URL",
-    "html_too_large": "HTMLのサイズ上限超過",
-    "missing_task_link": "問題リンクを確認できない",
-    "ambiguous_task_link": "問題リンクが複数ある",
-    "task_conflict": "同じtask IDに異なる問題URL",
-    "submission_conflict": "同じ提出IDに異なる提出URLまたは問題URL",
-    "task_id_mismatch": "既存のtask IDとページ上のtask IDが不一致",
-}
-COOKIE_WARNINGS = {
-    "permissions": "ファイルまたは保存先の権限を確認できません。",
-    "path": "保存先が安全な通常のファイルを指していません。",
-    "format": "保存形式が正しくありません。",
-    "read": "ファイルを読み取れません。",
+LOCAL_ERROR_LABELS = {
+    "task_conflict": "同じtask IDに異なる問題URLが登録されている",
+    "source_changed": "ソースの内容または言語が変わったため保留。確認後に `--accept-source-change`",
+    "snapshot_conflict": "保存済みソースの種類またはSHA-256が一致しない",
+    "storage_error": "ローカルスナップショットを保存できない",
 }
 
 
 class InboxError(Exception):
-    """An input or inbox error that can be shown without a traceback."""
+    """An inbox error safe to display without a traceback."""
+
+
+@dataclass
+class Inbox:
+    records: list
+    lines: list
+    indices: list
 
 
 def read_record(line):
@@ -68,8 +66,8 @@ def read_record(line):
         raise InboxError("URLと種別が一致していません。")
     try:
         timestamp = datetime.fromisoformat(record.get("registered_at"))
-    except (TypeError, ValueError) as error:
-        raise InboxError("登録日時の形式が正しくありません。") from error
+    except (TypeError, ValueError):
+        raise InboxError("登録日時の形式が正しくありません。") from None
     if timestamp.utcoffset() is None:
         raise InboxError("登録日時にタイムゾーンが必要です。")
     if legacy:
@@ -104,170 +102,132 @@ def read_record(line):
         ):
             raise InboxError("問題URLと識別子が一致していません。")
     elif record["status"] == "resolved" and fields["kind"] == "submission":
-        raise InboxError("解決済みの提出には確認済みの問題URLが必要です。")
-    if record.get("resolution_error") is not None and not isinstance(record["resolution_error"], str):
+        raise InboxError("解決済みの旧提出には問題URLが必要です。")
+    reason = record.get("resolution_error")
+    if reason is not None and not isinstance(reason, str):
         raise InboxError("解決エラーの形式が正しくありません。")
+    snapshot = record.get("local_source")
+    if snapshot is not None and (
+        not isinstance(snapshot, dict)
+        or snapshot.get("origin") != "atc-rs-local"
+        or snapshot.get("language") not in tuple(EXTENSIONS)
+        or not is_problem_index(snapshot.get("index"))
+        or not isinstance(snapshot.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", snapshot["sha256"])
+    ):
+        raise InboxError("ローカルソースの取得記録が不正です。")
     return record
 
 
-def read_records(path):
+def read_inbox(path):
     if path.is_symlink():
         raise InboxError("原本には通常のファイルを使ってください。")
     try:
-        source = path.open("rb")
+        with path.open("rb") as source:
+            lines = source.readlines()
     except FileNotFoundError:
-        return []
-    records = []
-    with source:
-        for number, line in enumerate(source, 1):
-            if not line.strip():
-                continue
-            try:
-                records.append(read_record(line))
-            except (InboxError, ValueError) as error:
-                reason = str(error) if isinstance(error, (InboxError, InvalidURL)) else "JSONまたはUTF-8が不正です。"
-                raise InboxError(f".local/inbox.jsonl の{number}行目: {reason}") from error
-    return records
-
-
-def problem_url(record):
-    return record["url"] if record["kind"] == "problem" else record.get("problem_url")
-
-
-def submission_number(record):
-    return record["submission_id"].lstrip("0") or "0"
-
-
-def conflicts(records):
-    by_task = defaultdict(list)
-    by_submission = defaultdict(list)
-    for record in records:
-        if problem_url(record):
-            by_task[record["task_id"]].append(record)
-        if record["kind"] == "submission":
-            by_submission[submission_number(record)].append(record)
-
-    issues = {}
-    for entries in by_task.values():
-        if len({problem_url(entry) for entry in entries}) > 1:
-            issues.update((entry["url"], "task_conflict") for entry in entries)
-    for entries in by_submission.values():
-        urls = {entry["url"] for entry in entries}
-        targets = {target for entry in entries if (target := problem_url(entry))}
-        if len(urls) > 1 or len(targets) > 1:
-            issues.update((url, "submission_conflict") for url in urls)
-    return issues
-
-
-def group_inbox(records):
-    """Return unorganized problem groups and individual entries needing attention."""
-    issues = conflicts(records)
-    groups = {}
-    remaining = []
-    seen = set()
-    for record in records:
-        if record["status"] == "organized" or record["url"] in seen:
+        lines = []
+    records, indices = [], []
+    for index, line in enumerate(lines):
+        if not line.strip():
             continue
-        seen.add(record["url"])
-        issue = issues.get(record["url"])
-        target = problem_url(record)
-        if issue:
-            remaining.append({**record, "status": "blocked", "resolution_error": issue})
-        elif target and (
-            record["status"] == "resolved"
-            or (record["kind"] == "problem" and record["status"] == "pending")
-        ):
-            group = groups.setdefault(
-                record["task_id"],
-                {
-                    "task_id": record["task_id"],
-                    "problem_url": target,
-                    "representative_submission_url": None,
-                    "entries": [],
-                },
-            )
-            group["entries"].append(record)
-        else:
-            remaining.append(record)
-    return list(groups.values()), remaining
+        try:
+            records.append(read_record(line))
+        except (InboxError, ValueError) as error:
+            reason = str(error) if isinstance(error, (InboxError, InvalidURL)) else "JSONまたはUTF-8が不正です。"
+            raise InboxError(f".local/inbox.jsonl の{index + 1}行目: {reason}") from None
+        indices.append(index)
+    return Inbox(records, lines, indices)
+
+
+def read_records(path):
+    return read_inbox(path).records
+
+
+def conflict_urls(records):
+    urls_by_task = {}
+    for record in records:
+        if record["kind"] == "problem":
+            urls_by_task.setdefault(record["task_id"], set()).add(record["url"])
+    return {url for urls in urls_by_task.values() if len(urls) > 1 for url in urls}
+
+
+def effective_status(record):
+    if record["kind"] == "problem" and record["status"] == "resolved" and not record.get("local_source"):
+        return "pending"
+    return record["status"]
 
 
 def error_label(code):
-    if code is None:
-        return ""
-    if re.fullmatch(r"http_[0-9]{3}", code):
-        return f"HTTP {code.removeprefix('http_')}"
-    return ERROR_LABELS.get(code, "解決エラー")
-
-
-def format_entry(record, status=None):
-    submission_id = record["submission_id"]
-    task_id = record["task_id"]
-    label = "提出" if submission_id is not None else "問題"
-    submission = f"`{submission_id}`" if submission_id is not None else "—"
-    task = f"`{task_id}`" if task_id is not None else "未解決"
-    timestamp = datetime.fromisoformat(record["registered_at"]).isoformat()
-    state = STATUS_LABELS[status or record["status"]]
-    reason = error_label(record.get("resolution_error"))
-    if reason:
-        state += f"（{reason}）"
-    return (
-        f"| [{label}]({record['url']}) | `{record['contest_id']}` | "
-        f"{submission} | {task} | {timestamp} | {state} |"
-    )
-
-
-def inbox_table(rows):
-    return [
-        "| AtCoder | コンテストID | 提出ID | task ID | 登録日時 | 整理状態 |",
-        "| --- | --- | --- | --- | --- | --- |",
-        *rows,
-        "",
-    ]
-
-
-def submission_order(record):
-    if record["kind"] == "problem":
-        return (0, "")
-    number = submission_number(record)
-    return (len(number), number)
+    return LOCAL_ERROR_LABELS.get(code) or ERROR_LABELS.get(code) or ""
 
 
 def render_inbox(records):
-    groups, remaining = group_inbox(records)
-    if not groups and not remaining:
+    conflicts = conflict_urls(records)
+    problems = []
+    legacy = []
+    for record in records:
+        if record["status"] == "organized":
+            continue
+        timestamp = datetime.fromisoformat(record["registered_at"]).isoformat()
+        if record["kind"] == "submission":
+            task = record["task_id"] or "—"
+            legacy.append(f"| [提出]({record['url']}) | `{task}` | {timestamp} |")
+            continue
+
+        state = "blocked" if record["url"] in conflicts else effective_status(record)
+        code = "task_conflict" if record["url"] in conflicts else record.get("resolution_error")
+        label = STATUS_LABELS[state]
+        if reason := error_label(code):
+            label += f"（{reason}）"
+        details = "—"
+        if snapshot := record.get("local_source"):
+            details = f"{snapshot['language']} / `{snapshot['sha256'][:12]}`"
+            if state != "resolved":
+                details += "（前回取得）"
+        problems.append(
+            f"| [問題]({record['url']}) | `{record['contest_id']}` | `{record['task_id']}` | "
+            f"{details} | {timestamp} | {label} |"
+        )
+    if not problems and not legacy:
         return "# Inbox\n\n未整理のURLはありません。\n"
     lines = ["# Inbox", ""]
-    if groups:
-        lines.extend(["## 解決済みの問題", ""])
-        for group in groups:
-            lines.extend([
-                f"### [{group['task_id']}]({group['problem_url']})",
-                "",
-                "代表提出 未選定",
-                "",
-                *inbox_table(
-                    format_entry(entry, "resolved")
-                    for entry in sorted(group["entries"], key=submission_order)
-                ),
-            ])
-    if remaining:
-        lines.extend(["## 未解決・保留", "", *inbox_table(map(format_entry, remaining))])
+    if problems:
+        lines.extend([
+            "## 問題",
+            "",
+            "| AtCoder | コンテストID | task ID | 言語・SHA-256 | 登録日時 | 状態 |",
+            "| --- | --- | --- | --- | --- | --- |",
+            *problems,
+            "",
+        ])
+    if legacy:
+        lines.extend([
+            "## 旧方式の提出URL",
+            "",
+            "旧登録として保持しています。ローカルソースを取得するには問題URLを登録してください。",
+            "",
+            "| AtCoder | task ID | 登録日時 |",
+            "| --- | --- | --- |",
+            *legacy,
+            "",
+        ])
     return "\n".join(lines)
 
 
-def atomic_write(path, content, local):
-    # Keep partial writes in the Git-ignored directory, including for Inbox.md.
+def atomic_write(path, content, local, *, immutable=False):
+    # Temporary files also stay inside the Git-ignored directory.
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="\n", dir=local, delete=False
-        ) as stream:
+        with tempfile.NamedTemporaryFile(dir=local, delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        if immutable:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -285,180 +245,214 @@ def file_lock(path):
         yield
 
 
-def write_records(source, records):
-    atomic_write(source, "".join(json.dumps(record) + "\n" for record in records), source.parent)
+def write_records(path, inbox, updated):
+    lines = inbox.lines.copy()
+    for old, new, index in zip(inbox.records, updated, inbox.indices):
+        if new != old:
+            lines[index] = (json.dumps(new) + "\n").encode("utf-8")
+    extra = updated[len(inbox.records):]
+    if extra and lines and not lines[-1].endswith(b"\n"):
+        lines.append(b"\n")
+    lines.extend((json.dumps(record) + "\n").encode("utf-8") for record in extra)
+    atomic_write(path, b"".join(lines), path.parent)
 
 
 def write_view(local, records, *, saved):
     view = "<!-- 生成元 .local/inbox.jsonl。再生成は python3 tools/note.py rebuild -->\n\n"
     try:
-        atomic_write(VAULT / "Inbox.md", view + render_inbox(records), local)
-    except OSError as error:
+        atomic_write(VAULT / "Inbox.md", (view + render_inbox(records)).encode("utf-8"), local)
+    except OSError:
         details = "原本には変更が保存されています。" if saved else ""
         raise InboxError(
             f"Inbox.mdを更新できません。{details} 原因を解消して rebuild を実行してください。"
-            f"（{error.strerror or error}）"
-        ) from error
+        ) from None
 
 
-def fetch_pending(records):
-    issues = conflicts(records)
-    outcomes = {}
-    session = None
-    for record in records:
-        url = record["url"]
-        if (
-            record["status"] != "pending"
-            or record["kind"] != "submission"
-            or url in outcomes
-            or url in issues
-        ):
-            continue
-        if outcomes:
-            time.sleep(REQUEST_INTERVAL_SECONDS)
-        if session is None:
-            session = load_session_cookie()
-            if notice := COOKIE_WARNINGS.get(session.state):
-                print(f"atc-rsの認証情報を使用せず取得します。{notice}", file=sys.stderr)
-        try:
-            if session.header is None:
-                outcomes[url] = fetch_task(url)
-            else:
-                outcomes[url] = fetch_task(url, session=session)
-        except ResolutionError as error:
-            outcomes[url] = error
-            if error.code == "http_429":
-                break
-    return outcomes, session.state if session is not None else None
+def is_reparse(info):
+    return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def apply_resolutions(records, outcomes):
-    updated = []
-    for record in records:
-        if record["status"] != "pending":
-            updated.append(record)
-            continue
+def snapshot_path(directory, metadata):
+    suffix = EXTENSIONS[metadata["language"]]
+    return directory / f"{metadata['sha256']}.{suffix}"
 
-        outcome = outcomes.get(record["url"])
-        if record["kind"] == "problem":
-            outcome = {"task_id": record["task_id"], "url": record["url"]}
-        if isinstance(outcome, ResolutionError):
-            status = "blocked" if outcome.blocked else "pending"
-            record = {**record, "status": status, "resolution_error": outcome.code}
-        elif outcome is not None:
-            if record["task_id"] not in (None, outcome["task_id"]):
-                record = {**record, "status": "blocked", "resolution_error": "task_id_mismatch"}
-            else:
-                record = {
-                    **record,
-                    "status": "resolved",
-                    "task_id": outcome["task_id"],
-                    "problem_url": outcome["url"],
-                }
-                record.pop("resolution_error", None)
-        updated.append(record)
 
-    issues = conflicts(updated)
-    for index, (previous, record) in enumerate(zip(records, updated)):
-        if previous["status"] == "pending" and (issue := issues.get(record["url"])):
-            updated[index] = {**record, "status": "blocked", "resolution_error": issue}
+def check_snapshot(path, digest):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or is_reparse(info) or info.st_size > MAX_SOURCE_BYTES:
+        raise InboxError(LOCAL_ERROR_LABELS["snapshot_conflict"])
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags | getattr(os, "O_BINARY", 0)), "rb") as file:
+        opened = os.fstat(file.fileno())
+        if not stat.S_ISREG(opened.st_mode) or is_reparse(opened) or not os.path.samestat(info, opened):
+            raise InboxError(LOCAL_ERROR_LABELS["snapshot_conflict"])
+        content = file.read(MAX_SOURCE_BYTES + 1)
+    if len(content) > MAX_SOURCE_BYTES or hashlib.sha256(content).hexdigest() != digest:
+        raise InboxError(LOCAL_ERROR_LABELS["snapshot_conflict"])
+    return True
+
+
+def update_source(record, export, local, accept_change):
+    metadata = {
+        "origin": "atc-rs-local",
+        "index": export.index,
+        "language": export.language,
+        "sha256": hashlib.sha256(export.content).hexdigest(),
+    }
+    previous = record.get("local_source")
+    if previous and previous["index"] != metadata["index"]:
+        return {**record, "status": "blocked", "resolution_error": "identity_mismatch"}
+    directory = local / "sources"
+    try:
+        directory.mkdir(mode=0o700, exist_ok=True)
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or is_reparse(info):
+            raise InboxError(LOCAL_ERROR_LABELS["snapshot_conflict"])
+        if previous:
+            check_snapshot(snapshot_path(directory, previous), previous["sha256"])
+            changed = any(previous[key] != metadata[key] for key in ("language", "sha256"))
+            if changed and not accept_change:
+                return {**record, "status": "pending", "resolution_error": "source_changed"}
+        target = snapshot_path(directory, metadata)
+        if not check_snapshot(target, metadata["sha256"]):
+            try:
+                atomic_write(target, export.content, local, immutable=True)
+            except FileExistsError:
+                if not check_snapshot(target, metadata["sha256"]):
+                    raise OSError("snapshot disappeared before validation") from None
+    except InboxError:
+        return {**record, "status": "blocked", "resolution_error": "snapshot_conflict"}
+    except OSError:
+        return {**record, "status": "pending", "resolution_error": "storage_error"}
+    updated = {**record, "status": "resolved", "local_source": metadata}
+    updated.pop("resolution_error", None)
     return updated
 
 
-def run_resolve(source):
-    local = source.parent
+def run_resolve(path, args):
+    local = path.parent
+    workspace = Path(os.path.abspath(Path(args.workspace).expanduser())) if args.workspace else Path.cwd()
     with file_lock(local / "resolve.lock"):
-        # Allow offline registration while network requests are in progress.
-        outcomes, session_state = fetch_pending(read_records(source))
+        records = read_records(path)
+        issues = conflict_urls(records)
+        outcomes = {}
+        for record in records:
+            url = record["url"]
+            if (
+                record["kind"] != "problem"
+                or effective_status(record) not in ("pending", "resolved")
+                or url in outcomes
+                or url in issues
+            ):
+                continue
+            try:
+                outcomes[url] = fetch_source(record, workspace, args.language)
+            except SourceError as error:
+                outcomes[url] = error
+
+        # Reread while holding the write lock so registrations made during atc
+        # execution are retained. Publish snapshots before the JSONL references.
         with file_lock(local / "inbox.lock"):
-            records = read_records(source)
-            updated = apply_resolutions(records, outcomes)
-            changed = updated != records
+            inbox = read_inbox(path)
+            issues = conflict_urls(inbox.records)
+            updated = []
+            results = []
+            for record in inbox.records:
+                if record["kind"] != "problem" or record["status"] == "organized":
+                    updated.append(record)
+                    continue
+                outcome = outcomes.get(record["url"])
+                if record["url"] in issues:
+                    record = {**record, "status": "blocked", "resolution_error": "task_conflict"}
+                elif record["status"] == "blocked":
+                    results.append(record)
+                    updated.append(record)
+                    continue
+                elif isinstance(outcome, SourceError):
+                    state = "blocked" if outcome.code == "identity_mismatch" else "pending"
+                    record = {**record, "status": state, "resolution_error": outcome.code}
+                elif outcome is not None:
+                    record = update_source(record, outcome, local, args.accept_source_change)
+                else:
+                    updated.append(record)
+                    continue
+                results.append(record)
+                updated.append(record)
+            changed = inbox.records != updated
             if changed:
-                write_records(source, updated)
+                write_records(path, inbox, updated)
             write_view(local, updated, saved=changed)
 
-    transitions = Counter(
-        new["status"]
-        for old, new in zip(records, updated)
-        if old["status"] == "pending" and new["status"] != "pending"
-    )
-    retryable = Counter(
-        error_label(entry.get("resolution_error"))
-        for entry in updated
-        if entry["status"] == "pending" and entry["url"] in outcomes
-    )
-    for reason, count in sorted(retryable.items()):
-        print(f"再試行待ち {count}件（{reason}）")
-    failure_codes = {result.code for result in outcomes.values() if isinstance(result, ResolutionError)}
-    if "http_403" in failure_codes:
-        if session_state == "loaded":
-            context = "atc-rsの保存済み認証情報を送信しました。"
-        elif session_state == "missing":
-            context = "atc-rsの保存済み認証情報が見つからず、未認証で取得しました。"
-        else:
-            context = "atc-rsの保存済み認証情報を読み込めず、未認証で取得しました。"
-        print(f"HTTP 403。{context} 403の原因やセッションの有効性は確認できません。")
-    if "http_429" in failure_codes:
-        print("HTTP 429のため後続の取得を中止しました。時間をおいて再実行してください。")
-    print(
-        f"今回の解決 {transitions['resolved']}件、保留 {transitions['blocked']}件。"
-        f"未解決 {sum(entry['status'] == 'pending' for entry in updated)}件。"
-    )
+    counts = Counter(row["status"] for row in results)
+    for code, count in Counter(row.get("resolution_error") for row in results if row["status"] != "resolved").items():
+        print(f"{count}件（{error_label(code) or '要確認'}）")
+    print(f"照合済み {counts['resolved']}件、取得待ち {counts['pending']}件、保留 {counts['blocked']}件。")
+    return int(bool(counts["pending"] or counts["blocked"]))
 
 
 def run_command(args):
     fields = parse_url(args.url) if args.command == "add" else None
+    if fields is not None and fields["kind"] != "problem":
+        raise InvalidURL("新規登録にはAtCoderの問題URL（/tasks/…）を指定してください。")
     local = VAULT / ".local"
     source = local / "inbox.jsonl"
-    if local.is_symlink():
+    if local.is_symlink() or (local.exists() and is_reparse(local.lstat())):
         raise InboxError(".local にはVault内のディレクトリを使ってください。")
     if args.command == "list":
         print(render_inbox(read_records(source)), end="")
-        return
+        return 0
 
     local.mkdir(mode=0o700, exist_ok=True)
     if args.command == "resolve":
-        run_resolve(source)
-        return
+        return run_resolve(source, args)
     with file_lock(local / "inbox.lock"):
-        records = read_records(source)
+        inbox = read_inbox(source)
+        records = inbox.records
         added = fields is not None and all(record["url"] != fields["url"] for record in records)
         if added:
             record = {
                 "schema_version": SCHEMA_VERSION,
                 **fields,
                 "registered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "status": "resolved" if fields["kind"] == "problem" else "pending",
+                "status": "pending",
             }
-            records.append(record)
-            if (issue := conflicts(records).get(record["url"])) and record["kind"] == "problem":
-                record.update(status="blocked", resolution_error=issue)
-            write_records(source, records)
+            records = [*records, record]
+            if record["url"] in conflict_urls(records):
+                record.update(status="blocked", resolution_error="task_conflict")
+            write_records(source, inbox, records)
         write_view(local, records, saved=added)
 
     if args.command == "rebuild":
         print("Inbox.mdを再生成しました。")
     elif added:
-        print("URLを登録し、Inbox.mdを更新しました。")
+        print("問題URLを登録し、Inbox.mdを更新しました。")
     else:
         print("このURLは登録済みです。Inbox.mdを更新しました。")
+    return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AtCoderのURLをローカルのInboxで管理します。")
+    parser = argparse.ArgumentParser(description="AtCoderの問題とローカルソースをInboxで管理します。")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("add", help="AtCoderの提出URLまたは問題URLを登録").add_argument("url")
-    commands.add_parser("resolve", help="未解決の提出ページから問題リンクを取得")
-    commands.add_parser("list", help="未整理URLの一覧を表示")
+    commands.add_parser("add", help="AtCoderの問題URLを登録").add_argument("url")
+    resolve = commands.add_parser("resolve", help="atc-rsからローカルソースを取得")
+    resolve.add_argument("--workspace", help="atc-rs Workspace root（省略時は現在のディレクトリ）")
+    resolve.add_argument("--language", choices=tuple(EXTENSIONS), help="取得する言語を選択")
+    resolve.add_argument("--accept-source-change", action="store_true", help="変更後のソースを新しい版として採用")
+    commands.add_parser("list", help="未整理URLとローカルソースの取得状態を表示")
     commands.add_parser("rebuild", help="Inbox.mdを原本から再生成")
     args = parser.parse_args()
     try:
-        run_command(args)
-    except (InboxError, InvalidURL, OSError) as error:
+        return run_command(args)
+    except (InboxError, InvalidURL) as error:
         print(f"エラー: {error}", file=sys.stderr)
         return 1
-    return 0
+    except (OSError, RuntimeError):
+        print("エラー: ローカルファイルまたはWorkspaceを処理できません。", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
