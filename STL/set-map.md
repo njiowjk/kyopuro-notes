@@ -40,41 +40,6 @@ if (it != st.end()) {
 
 `set` 自身の `lower_bound()` を使う。
 
-## multiset
-
-重複を許すソート済み集合。
-
-```cpp
-multiset<int> st = {1, 1, 2, 3};
-```
-
-個数。
-
-```cpp
-int cnt = (int)st.count(1);
-```
-
-1個だけ削除。
-
-```cpp
-auto it = st.find(1);
-
-if (it != st.end()) {
-    st.erase(it);
-}
-```
-
-値を渡すと全部消える。
-
-```cpp
-st.erase(1);
-```
-
-最小・最大
-```cpp
-int mn = *st.begin();   // 最小値
-int mx = *st.rbegin();  // 最大値
-```
 ## map
 
 キー順に管理される連想配列。
