@@ -70,6 +70,11 @@ if (it != st.end()) {
 st.erase(1);
 ```
 
+最小・最大
+```cpp
+int mn = *st.begin();   // 最小値
+int mx = *st.rbegin();  // 最大値
+```
 ## map
 
 キー順に管理される連想配列。
