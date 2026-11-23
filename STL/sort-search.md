@@ -66,29 +66,6 @@ if (it != a.end()) {
 
 `string::find()` とは別物。
 
-## lower_bound / upper_bound
-
-基本的にソート済み範囲で使う。
-
-```cpp
-int left = (int)(lower_bound(a.begin(), a.end(), x) - a.begin());
-int right = (int)(upper_bound(a.begin(), a.end(), x) - a.begin());
-```
-
-Pythonとの対応。
-
-- `bisect_left(a, x)` → `lower_bound`
-- `bisect_right(a, x)` → `upper_bound`
-
-個数計算。
-
-```cpp
-int less_than_x = left;
-int less_equal_x = right;
-int greater_equal_x = (int)a.size() - left;
-int greater_than_x = (int)a.size() - right;
-int equal_x = right - left;
-```
 
 ## binary_search
 
